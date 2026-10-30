@@ -1,0 +1,204 @@
+*dsh.txt*   DeepSeek Harness inside Neovim
+
+==============================================================================
+dsh.nvim                                                            *dsh.nvim*
+
+Browse DeepSeek Harness (`dsh`) sessions, read their history in a buffer and
+send prompts, with the agent's reply streaming into the buffer over DSH's
+WebSocket.
+
+Requires Neovim 0.10+, `curl`, and either `dsh` on `$PATH` or `npx`.
+
+The plugin starts its own `dsh web` process with `--port 0` and stops it when
+Neovim exits.
+
+Setup: >lua
+    require("dsh").setup({})
+<
+==============================================================================
+COMMANDS                                                        *dsh-commands*
+
+:Dsh                    Open a session: the current one, or pick one.
+:DshNew                 Create a session in the current directory.
+:DshNew!                Create a session, then open the prompt popup.
+:DshSessions            Pick a session with |vim.ui.select|.
+:DshPrompt              Prompt popup for the current session.
+:DshRefresh             Re-open the stream and re-read history.
+:DshCancel              Cancel the running turn.
+:DshClose               Close the session view.
+:DshStop                Stop the `dsh web` process started by the plugin.
+:DshStatus              Show server and WebSocket status.
+
+==============================================================================
+KEYMAPS                                                          *dsh-keymaps*
+
+Buffer-local, inside a DSH chat buffer:
+
+    <CR>                    Open the prompt popup
+    R                       Re-open the stream
+    <localleader>s          Pick another session
+    <C-c>                   Cancel the running turn
+    q                       Close the view
+
+In the prompt popup:
+
+    <C-s>                   Send (normal and insert mode)
+    <CR>                    Send (normal mode)
+    <Esc>                   Cancel
+
+Enter inserts a newline in insert mode, so prompts may span lines.
+
+Global keymaps can be configured with `keymaps.global`; see |dsh-config|.
+
+==============================================================================
+CONFIGURATION                                                     *dsh-config*
+
+All keys are optional; defaults shown. >lua
+    require("dsh").setup({
+      cmd = nil,                -- nil => {"dsh"}, else {"npx","--yes","@deepseek-ai/dsh"}
+      port = 0,                 -- 0 => OS-assigned
+      cwd = nil,                -- server cwd (default: Neovim cwd)
+      auto_start = true,
+      startup_timeout = 120000,
+      request_timeout = 60000,
+      max_messages = 200,
+      sessions = { order = "oldest" },  -- "oldest" | "newest" | "none"
+      tool_output_lines = 8,
+      stream = {
+        enabled = true,         -- false => read history once over HTTP
+        render_interval = 60,
+        reconnect_attempts = 5,
+        reconnect_delay = 1500,
+      },
+      show_reasoning = false,
+      markdown = {
+        enabled = true,         -- render agent output as Markdown
+        code_highlight = true,  -- treesitter inside fenced code
+        show_language = true,   -- fence language as virtual text
+        max_highlight_lines = 300,
+      },
+      chat = {
+        open_in = "split",      -- "split" | "tab" | "current"
+        split = "vertical",     -- orientation when open_in = "split"
+        width = 100,
+        height = 20,
+      },
+      keymaps = {
+        prompt = "<CR>", refresh = "R", cancel = "<C-c>",
+        sessions = "<localleader>s", close = "q",
+        global = {},            -- e.g. { new_session = "<leader>dn" }
+      },
+      notifications = true,
+    })
+<
+`chat.open_in` selects where a session view opens: "split" (default), "tab"
+or "current". With "tab", each session gets its own tab page, reopening
+focuses the existing tab, and closing the view closes that tab. The legacy
+spelling `split = "tab"` is still honoured.
+
+`sessions.order` controls |:DshSessions| ordering. DSH itself returns sessions
+most-recently-used first; the default "oldest" shows the least recently used
+session at the top so stale work is easy to find. Use "newest" for the server
+order, or "none" to keep whatever the server sends.
+
+==============================================================================
+MARKDOWN                                                        *dsh-markdown*
+
+Assistant messages are rendered as Markdown; prompts you type are echoed
+verbatim, because Markdown syntax there is your own text.
+
+Rendered:
+- ATX headings (`#` … `######`) — markers removed, styled by level
+- bullet and numbered lists, nested by their source indentation
+- task checkboxes (`- [ ]`, `- [x]`) as ☐ / ☑
+- blockquotes with a `│` gutter
+- horizontal rules as a line
+- inline `code`, **bold**, *italic*, ~~strikethrough~~ and links
+- fenced code blocks: fences are removed, code is indented by two spaces and
+  grouped under |hl-DshCodeBlock|, with treesitter highlighting when the
+  language parser is installed. The fence language appears as virtual text, so
+  it never enters the buffer contents.
+
+Not rendered: tables are shown as source text, and `_italic_` is left alone so
+snake_case identifiers survive.
+
+Highlight groups are created with `default = true`, so any colourscheme or
+|dsh-config| can override them: |hl-DshH1| … |hl-DshH6|, |hl-DshBold|,
+|hl-DshItalic|, |hl-DshStrike|, |hl-DshCode|, |hl-DshCodeBlock|,
+|hl-DshCodeLang|, |hl-DshLink|, |hl-DshQuote|, |hl-DshBullet|, |hl-DshHr|.
+
+Set `markdown.enabled = false` to show the raw source instead.
+
+==============================================================================
+HOW IT WORKS                                                        *dsh-design*
+
+`dsh web` prints its URL with a per-process launch token, for example: >
+
+    dsh web: http://127.0.0.1:3080/?token=...
+<
+The token exists only in that line, so the plugin reads it from the process
+stdout and exchanges it: >
+
+    GET /connect?token=<token>&interactions=none
+<
+The answer sets a signed, authority-bound cookie.
+
+Unary calls use HTTP: >
+
+    POST /api/<namespace>/<method>
+    Cookie: <cookie>
+    {"type":"client-request","rpcId":"…","method":"<namespace>/<method>",
+     "payload":{"args":{…}}}
+<
+and answer with: >
+
+    {"type":"server-response","rpcId":"…","result":{"ok":true,"value":{…}}}
+<
+Methods: `session/list`, `session/create`, `session/page`, `session/prompt`,
+`session/cancel`.
+
+Live updates use one multiplexed WebSocket at `/api/remote.mux`: >
+
+    client -> {"type":"open","streamId":"nvim-1",
+               "endpoint":"session/follow",
+               "payload":{"args":{"request":{…,"assistantStream":true}}}}
+    server -> {"type":"item","streamId":"nvim-1","value":{…}}
+              {"type":"end"|"error","streamId":"nvim-1",…}
+<
+The first `item` of a follow stream is a snapshot (records, cursor,
+projections, in-flight assistant stream); after it, durable events arrive as
+`event` items and live token deltas as `assistant-stream` items.
+
+`lua/dsh/ws.lua` implements the RFC 6455 client over |vim.uv| because Neovim
+has no WebSocket client. DSH pings every 2 seconds and terminates a peer that
+misses two pongs, so ping/pong handling is required, not optional.
+
+Two DSH constraints shape this design:
+
+- Unary methods cannot be opened on the stream carrier; DSH answers
+  `gateway/signature-invalid`. HTTP therefore remains for unary calls.
+- One authenticated peer may own one socket (a second upgrade gets 409), and DSH
+  disposes that peer when the socket closes, so reusing its cookie answers 401.
+  The plugin keeps a long-lived cookie for HTTP and mints a disposable peer for
+  every socket; all session views share one multiplexed connection.
+
+==============================================================================
+TROUBLESHOOTING                                              *dsh-troubleshoot*
+
+Run |:checkhealth| `dsh` first.
+
+- "no session cookie returned": the launch token was stale. The plugin mints
+  its own token on every start, so this only appears if a fixed `port` is
+  already served by another process with a different token.
+- "websocket upgrade rejected": the cookie does not belong to the running
+  server. `:DshStop` then reopening re-mints both.
+- "live updates stopped": reconnect attempts were exhausted. `R` in the chat
+  buffer retries; `:DshStatus` shows whether the socket is connected.
+- "timed out waiting for dsh web to start": the first launch may need to
+  install the `web` profile. Run `dsh web` once in a terminal, or raise
+  `startup_timeout`.
+- Prompt is accepted but the answer is an error: the failure is rendered in
+  the buffer. Configure a provider key in the DSH Models page or export it in
+  the environment that launches Neovim.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
