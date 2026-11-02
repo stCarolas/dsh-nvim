@@ -222,6 +222,12 @@ end
 --- Each `/connect` creates a new peer, and DSH disposes a peer when the socket
 --- that claimed it closes. WebSocket connections therefore mint their own cookie
 --- instead of consuming the long-lived HTTP one.
+---
+--- Socket peers are minted with `interactions=answer`: forwarded human
+--- interactions (questions and approvals) ride the socket that owns them, and
+--- only an answer-capable peer may open that stream or send its answers. The
+--- long-lived HTTP peer keeps `interactions=none`, because answering through a
+--- different peer is rejected by DSH.
 --- @param timeout number|nil
 --- @return string|nil cookie
 --- @return string|nil error
@@ -229,7 +235,7 @@ function M.mint_cookie(timeout)
   if not state.url or not state.token then
     return nil, "dsh is not connected"
   end
-  return http.connect(state.url, state.token, timeout or config.options.request_timeout)
+  return http.connect(state.url, state.token, timeout or config.options.request_timeout, "answer")
 end
 
 --- Ensure a connection, then hand its context to `callback`.

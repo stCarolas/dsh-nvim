@@ -265,15 +265,27 @@ function M.render(buf, entries, win)
   end
 end
 
+--- Text that `'winbar'` shows literally.
+---
+--- `'winbar'` is evaluated like `'statusline'`, so a session title is not merely
+--- display text: a `%{…}` run in it would evaluate Vimscript, and a lone `%`
+--- makes the assignment raise E539/E542. Titles are agent-generated, so they are
+--- treated as untrusted: escape the metacharacter and drop line breaks.
+--- @param text string
+--- @return string
+local function literal(text)
+  return (text:gsub("%%", "%%%%"):gsub("[\r\n]", " "))
+end
+
 --- Window bar describing the session.
 --- @param title string|nil
 --- @param status string|nil
 function M.winbar(title, status)
   local name = (title and title ~= "") and title or "untitled"
   if status and status ~= "" then
-    return (" dsh · %s · %s "):format(name, status)
+    return (" dsh · %s · %s "):format(literal(name), literal(status))
   end
-  return (" dsh · %s "):format(name)
+  return (" dsh · %s "):format(literal(name))
 end
 
 return M

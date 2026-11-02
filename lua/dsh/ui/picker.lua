@@ -45,7 +45,8 @@ end
 --- Prompt the user to choose a session.
 --- @param items table[]
 --- @param on_choice fun(item: table)
-function M.select(items, on_choice)
+--- @param opts {prompt: string|nil}|nil
+function M.select(items, on_choice, opts)
   local labels = {}
   local index_by_label = {}
 
@@ -58,7 +59,7 @@ function M.select(items, on_choice)
     labels[#labels + 1] = label
   end
 
-  vim.ui.select(labels, { prompt = "DSH sessions" }, function(choice)
+  vim.ui.select(labels, { prompt = (opts and opts.prompt) or "DSH sessions" }, function(choice)
     if not choice then
       return
     end

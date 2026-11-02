@@ -3,9 +3,10 @@
 ==============================================================================
 dsh.nvim                                                            *dsh.nvim*
 
-Browse DeepSeek Harness (`dsh`) sessions, read their history in a buffer and
-send prompts, with the agent's reply streaming into the buffer over DSH's
-WebSocket.
+Browse the DeepSeek Harness (`dsh`) sessions of the directory you are working
+in, read their history in a buffer, send prompts, with the agent's reply
+streaming into the buffer over DSH's WebSocket, and answer the agent's
+questions and approval requests through |vim.ui.select()|.
 
 Requires Neovim 0.10+, `curl`, and either `dsh` on `$PATH` or `npx`.
 
@@ -18,16 +19,17 @@ Setup: >lua
 ==============================================================================
 COMMANDS                                                        *dsh-commands*
 
-:Dsh                    Open a session: the current one, or pick one.
-:DshNew                 Create a session in the current directory.
+:Dsh                    Open a session: the current one, or pick one in this
+                        directory.
+:DshNew                 Create a session in this directory's workspace.
 :DshNew!                Create a session, then open the prompt popup.
-:DshSessions            Pick a session with |vim.ui.select|.
+:DshSessions            Pick a session rooted at the current directory.
 :DshPrompt              Prompt popup for the current session.
 :DshRefresh             Re-open the stream and re-read history.
 :DshCancel              Cancel the running turn.
 :DshClose               Close the session view.
 :DshStop                Stop the `dsh web` process started by the plugin.
-:DshStatus              Show server and WebSocket status.
+:DshStatus              Show server, WebSocket and question status.
 
 ==============================================================================
 KEYMAPS                                                          *dsh-keymaps*
@@ -51,6 +53,39 @@ Enter inserts a newline in insert mode, so prompts may span lines.
 Global keymaps can be configured with `keymaps.global`; see |dsh-config|.
 
 ==============================================================================
+QUESTIONS AND APPROVALS                                       *dsh-questions*
+
+While a session view is open, the plugin answers the human decisions DSH
+forwards to connected clients. Both kinds use |vim.ui.select()| and
+|vim.ui.input()|, so any installed `vim.ui` provider works unchanged.
+
+`ask_user_question` tool calls ~
+    Each question opens one picker:
+    - option rows show the option's description when DSH sent one;
+    - "Other…" asks for free text with |vim.ui.input()|;
+    - a multi-select question keeps prompting until "Done selecting";
+      chosen options are marked ✓ and selecting one again toggles it off;
+      free text supplements those labels;
+    - "Skip this question" sends a blank answer (`selected = []`); <Esc>
+      skips too, or finishes a multi-select with what is already chosen;
+    - several questions in one call are asked in order and submitted as one
+      answer batch.
+    A question's long `detail` (for example a plan under review) is shown in a
+    notification before the picker, because a picker prompt is one line.
+
+Tool approvals ~
+    "Allow once" / "Reject". <Esc> rejects, failing closed, the same choice
+    the DSH Web approval panel makes.
+
+The prompts ride the same multiplexed WebSocket as the live session. They
+become available with the first session view and stop with the last one. A
+question asked while no view is open is delivered by DSH when the next view
+connects. A timed question is claimed while its prompt is open, so the model
+does not time out mid-decision; an answer given after DSH released the wait
+arrives as a follow-up turn. See `interactions` in |dsh-config| to turn either
+kind off.
+
+==============================================================================
 CONFIGURATION                                                     *dsh-config*
 
 All keys are optional; defaults shown. >lua
@@ -62,7 +97,10 @@ All keys are optional; defaults shown. >lua
       startup_timeout = 120000,
       request_timeout = 60000,
       max_messages = 200,
-      sessions = { order = "oldest" },  -- "oldest" | "newest" | "none"
+      sessions = {
+        order = "oldest",       -- "oldest" | "newest" | "none"
+        scope = "cwd",          -- "cwd" | "all"
+      },
       tool_output_lines = 8,
       stream = {
         enabled = true,         -- false => read history once over HTTP
@@ -83,6 +121,11 @@ All keys are optional; defaults shown. >lua
         width = 100,
         height = 20,
       },
+      interactions = {
+        enabled = true,         -- answer forwarded questions and approvals
+        questions = true,       -- ask_user_question tool calls
+        approvals = true,       -- permission prompts for sensitive tools
+      },
       keymaps = {
         prompt = "<CR>", refresh = "R", cancel = "<C-c>",
         sessions = "<localleader>s", close = "q",
@@ -96,10 +139,25 @@ or "current". With "tab", each session gets its own tab page, reopening
 focuses the existing tab, and closing the view closes that tab. The legacy
 spelling `split = "tab"` is still honoured.
 
-`sessions.order` controls |:DshSessions| ordering. DSH itself returns sessions
+Sessions are scoped to the directory Neovim runs in. :DshNew resolves the
+DSH workspace for that directory (registering it when it does not exist yet)
+and creates the session inside it, so new sessions are grouped under the same
+project in the DSH web UI. :DshSessions lists only sessions whose cwd is the
+current directory; symlinked spellings of the directory compare equal because
+both paths are canonicalized with `realpath` first.
+
+`sessions.scope` controls that filter: "cwd" (default), or "all" to list every
+session on the server; in "all" mode the picker prompt does not name a
+directory. Any other value warns and falls back to "cwd". `sessions.order`
+controls :DshSessions ordering. DSH itself returns sessions
 most-recently-used first; the default "oldest" shows the least recently used
 session at the top so stale work is easy to find. Use "newest" for the server
 order, or "none" to keep whatever the server sends.
+
+If DSH creates the session and only then fails to attach it to the workspace,
+the error carries the new session id: that session is opened with a warning
+instead of creating a second one. Only errors raised before creation, or a
+deployment without a workspace registry, fall back to a plain `cwd` session.
 
 ==============================================================================
 MARKDOWN                                                        *dsh-markdown*
@@ -141,7 +199,10 @@ stdout and exchanges it: >
 
     GET /connect?token=<token>&interactions=none
 <
-The answer sets a signed, authority-bound cookie.
+The answer sets a signed, authority-bound cookie. The long-lived HTTP peer
+keeps `interactions=none`; the peer that owns a socket is minted separately
+with `interactions=answer`, because only that kind may receive and answer
+human decisions.
 
 Unary calls use HTTP: >
 
@@ -155,7 +216,7 @@ and answer with: >
     {"type":"server-response","rpcId":"…","result":{"ok":true,"value":{…}}}
 <
 Methods: `session/list`, `session/create`, `session/page`, `session/prompt`,
-`session/cancel`.
+`session/cancel`, `workspace/create`.
 
 Live updates use one multiplexed WebSocket at `/api/remote.mux`: >
 
@@ -168,6 +229,20 @@ Live updates use one multiplexed WebSocket at `/api/remote.mux`: >
 The first `item` of a follow stream is a snapshot (records, cursor,
 projections, in-flight assistant stream); after it, durable events arrive as
 `event` items and live token deltas as `assistant-stream` items.
+
+Human decisions use the Gateway-owned `$events` stream on that same socket.
+It starts with `{"type":"ready","clientId":…,"host":{…}}` and then forwards
+`user-questions/request` and `approval/request` waterfall frames. The plugin
+answers with a unary call: >
+
+    POST /api/$events/result
+    {"type":"client-request","rpcId":"…","method":"$events/result",
+     "payload":{"args":{"clientId":"…","eventId":"…",
+                        "outcome":{"kind":"result","value":{…}}}}}
+<
+DSH only accepts the answer from the peer that owns the event stream, so this
+call uses the socket's cookie, not the long-lived HTTP one. Answers decided
+while the socket is down are held and flushed after the next `ready` frame.
 
 `lua/dsh/ws.lua` implements the RFC 6455 client over |vim.uv| because Neovim
 has no WebSocket client. DSH pings every 2 seconds and terminates a peer that
@@ -194,6 +269,10 @@ Run |:checkhealth| `dsh` first.
   server. `:DshStop` then reopening re-mints both.
 - "live updates stopped": reconnect attempts were exhausted. `R` in the chat
   buffer retries; `:DshStatus` shows whether the socket is connected.
+- A question or approval never appeared: no session view is open, the socket
+  is disconnected, or `interactions.enabled` (or the specific
+  `interactions.questions` / `interactions.approvals`) is false. `:DshStatus`
+  reports the question stream; `:checkhealth dsh` shows the same.
 - "timed out waiting for dsh web to start": the first launch may need to
   install the `web` profile. Run `dsh web` once in a terminal, or raise
   `startup_timeout`.

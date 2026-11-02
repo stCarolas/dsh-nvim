@@ -3,6 +3,13 @@
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h")
 vim.opt.rtp:append(root)
 
+-- DSH keeps projects, sessions, profiles and the workspace registry under
+-- $DSH_HOME. This run creates all of them, so point it at a throwaway directory
+-- instead of the user's real profile; the directory is removed in `finish`.
+local smoke_home = vim.fn.tempname()
+vim.fn.mkdir(smoke_home, "p")
+vim.env.DSH_HOME = smoke_home
+
 local dsh = require("dsh")
 dsh.setup({
   notifications = false,
@@ -12,7 +19,10 @@ dsh.setup({
 
 local server = require("dsh.server")
 local session = require("dsh.session")
+local workspace = require("dsh.workspace")
+local http = require("dsh.http")
 local mux = require("dsh.mux")
+local interactions = require("dsh.interactions")
 local chat = require("dsh.ui.chat")
 
 local steps = {}
@@ -35,6 +45,9 @@ local function finish()
     print(("%s %-34s %s"):format(entry.ok and "PASS" or "FAIL", entry.name, entry.detail))
   end
   print(("=== %d failed ==="):format(failed))
+  if smoke_home then
+    pcall(vim.fn.delete, smoke_home, "rf")
+  end
   vim.cmd("cquit " .. (failed > 0 and 1 or 0))
 end
 
@@ -68,13 +81,41 @@ server.start(function(ok, err)
       step("session/list is least-recent-first", ascending, ("%d sessions"):format(#items))
     end
 
-    local value, create_err = session.create(ctx, vim.fn.getcwd())
-    step("session/create", value ~= nil, create_err or (value and value.sessionId))
+    -- The cwd must resolve to a Workspace before a session can join it.
+    local project, project_err, project_created = workspace.ensure(ctx, vim.fn.getcwd())
+    step("workspace resolved for cwd", project ~= nil, project_err or (project and project.workspaceId))
+
+    local value, create_err, create_warning = session.create_in_workspace(ctx, vim.fn.getcwd())
+    step("session/create in workspace", value ~= nil, create_err or (value and value.sessionId))
+    if create_warning then
+      step("session/create had no fallback", false, create_warning)
+    end
     if not value then
       done = true
       return
     end
     local session_id = value.sessionId
+
+    -- Creating in the Workspace attaches the session, and the picker filter
+    -- shows exactly the sessions rooted at this directory.
+    local attached, attached_err = workspace.ensure(ctx, vim.fn.getcwd())
+    local accounted = false
+    for _, member in ipairs(attached and attached.sessionIds or {}) do
+      if member == session_id then
+        accounted = true
+      end
+    end
+    step("session is accounted to the workspace", accounted, attached_err or tostring(attached and attached.workspaceId))
+
+    local scoped, scoped_err = session.list(ctx)
+    local visible = scoped and session.filter_directory(scoped, vim.fn.getcwd()) or {}
+    local found = false
+    for _, item in ipairs(visible) do
+      if item.sessionId == session_id then
+        found = true
+      end
+    end
+    step("scoped session/list contains the new session", found, scoped_err or ("%d sessions in cwd"):format(#visible))
 
     -- Full UI path: open the view, which subscribes over the shared WebSocket.
     chat.open(session_id)
@@ -85,6 +126,13 @@ server.start(function(ok, err)
     end, 100)
     step("view rendered from stream snapshot", rendered, ("%d lines"):format(vim.api.nvim_buf_line_count(buf)))
     step("websocket connected", mux.is_connected())
+
+    -- The same socket carries the forwarded $events stream: questions and
+    -- approvals are answerable once DSH has announced its client id.
+    local question_ready = vim.wait(15000, function()
+      return interactions.is_ready()
+    end, 100)
+    step("question stream ready", question_ready)
 
     -- Prompt through the real popup, then let the stream drive the update.
     chat.prompt(session_id)
@@ -121,6 +169,20 @@ server.start(function(ok, err)
       return not mux.is_connected()
     end, 50)
     step("closing the last view closes the socket", not mux.is_connected())
+
+    -- The run used a throwaway $DSH_HOME, so nothing here can reach the user's
+    -- real profile. Deleting the workspace is still best-effort: a cleanup
+    -- failure must not turn a feature run into a failure.
+    if project_created and project then
+      local deleted, delete_err = http.rpc(ctx, "workspace/delete", {
+        request = { workspaceId = project.workspaceId },
+      }, 60000)
+      if deleted then
+        step("cleanup: test workspace removed", true, project.workspaceId)
+      else
+        print(("WARN cleanup: test workspace not removed: %s"):format(tostring(delete_err)))
+      end
+    end
     done = true
   end)
 end)

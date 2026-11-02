@@ -3,6 +3,7 @@ local M = {}
 
 local config = require("dsh.config")
 local follow = require("dsh.follow")
+local interactions = require("dsh.interactions")
 local mux = require("dsh.mux")
 local render = require("dsh.render")
 local server = require("dsh.server")
@@ -23,7 +24,11 @@ end
 
 local function update_winbar(entry)
   if entry.win and vim.api.nvim_win_is_valid(entry.win) then
-    vim.wo[entry.win].winbar = render.winbar(entry.title, entry.status)
+    -- `'winbar'` is a statusline expression; a rejected assignment must not
+    -- abort a stream update, so keep the failure local.
+    pcall(function()
+      vim.wo[entry.win].winbar = render.winbar(entry.title, entry.status)
+    end)
   end
 end
 
@@ -69,43 +74,39 @@ local function schedule_reconnect(session_id, reason)
 end
 
 --- One-shot history read used when live streaming is disabled.
-local function load_once(session_id)
-  server.context(function(err, ctx)
-    if err then
-      notify(err, vim.log.levels.ERROR)
-      return
-    end
-    local entry = state.sessions[session_id]
-    if not entry or entry.closed then
-      return
-    end
+--- @param ctx {url: string, cookie: string}
+--- @param session_id string
+local function load_once(ctx, session_id)
+  local entry = state.sessions[session_id]
+  if not entry or entry.closed then
+    return
+  end
 
-    local item = session.find(ctx, session_id)
-    local cursor = item and item.projections and item.projections.asOfSeq
-    if not cursor then
-      cursor = session.cursor(ctx, session_id)
-    end
-    if not cursor then
-      entry.status = "no history"
-      update_winbar(entry)
-      return
-    end
-
-    local page, page_err = session.page(ctx, session_id, cursor, config.options.max_messages)
-    if not page then
-      entry.status = "error"
-      update_winbar(entry)
-      notify(page_err or "cannot read history", vim.log.levels.ERROR)
-      return
-    end
-
-    local built = surface.build(page.records)
-    entry.entries = built.entries
-    entry.title = built.title or entry.title
-    entry.status = item and item.running and "running" or "idle"
-    render.render(entry.buf, entry.entries, entry.win)
+  local item = session.find(ctx, session_id)
+  local cursor = item and item.projections and item.projections.asOfSeq
+  if not cursor then
+    cursor = session.cursor(ctx, session_id)
+  end
+  if not cursor then
+    entry.status = "no history"
     update_winbar(entry)
-  end)
+    return
+  end
+
+  local page, page_err = session.page(ctx, session_id, cursor, config.options.max_messages)
+  if not page then
+    entry.status = "error"
+    update_winbar(entry)
+    notify(page_err or "cannot read history", vim.log.levels.ERROR)
+    return
+  end
+
+  local built = surface.build(page.records)
+  entry.entries = built.entries
+  entry.title = built.title or entry.title
+  entry.status = item and item.running and "running" or "idle"
+  render.render(entry.buf, entry.entries, entry.win)
+  update_winbar(entry)
 end
 
 --- Subscribe a view to its session stream.
@@ -113,11 +114,6 @@ end
 function attach(session_id)
   local entry = state.sessions[session_id]
   if not entry or entry.closed or entry.attaching then
-    return
-  end
-
-  if not config.options.stream.enabled then
-    load_once(session_id)
     return
   end
 
@@ -133,6 +129,16 @@ function attach(session_id)
       current.status = "offline"
       update_winbar(current)
       notify(err, vim.log.levels.ERROR)
+      return
+    end
+
+    -- Forwarded questions and approvals ride the same multiplexed socket. They
+    -- open independently of `stream.enabled`, so a history-only view can still
+    -- answer a blocking `ask_user_question` call.
+    interactions.start(ctx)
+
+    if not config.options.stream.enabled then
+      load_once(ctx, session_id)
       return
     end
 
@@ -199,6 +205,7 @@ local function ensure_buffer(session_id)
         state.sessions[session_id] = nil
       end
       if next(state.sessions) == nil then
+        interactions.stop()
         mux.close()
       end
     end,
@@ -316,7 +323,7 @@ function M.open(session_id)
   attach(session_id)
 end
 
---- Create a session in the current directory and open it.
+--- Create a session in the current directory's workspace and open it.
 --- @param opts {prompt: boolean|nil}|nil
 function M.new_session(opts)
   server.context(function(err, ctx)
@@ -325,10 +332,13 @@ function M.new_session(opts)
       return
     end
 
-    local value, create_err = session.create(ctx, vim.fn.getcwd())
+    local value, create_err, warning = session.create_in_workspace(ctx, vim.fn.getcwd())
     if not value then
       notify(create_err or "cannot create session", vim.log.levels.ERROR)
       return
+    end
+    if warning then
+      notify(warning, vim.log.levels.WARN)
     end
 
     M.open(value.sessionId)
@@ -338,6 +348,32 @@ function M.new_session(opts)
       end)
     end
   end)
+end
+
+--- Sessions currently offered by the picker, after applying `sessions.scope`.
+--- @param items table[]
+--- @return table[]
+local function scoped(items)
+  if config.options.sessions.scope == "all" then
+    return items
+  end
+  return session.filter_directory(items)
+end
+
+--- Where this directory is shown to the user, abbreviated.
+--- @return string
+local function here()
+  return vim.fn.fnamemodify(vim.fn.getcwd(), ":~")
+end
+
+--- Prompt for the session picker, matching what the list actually contains.
+--- @return string
+local function picker_prompt()
+  if config.options.sessions.scope == "all" then
+    -- The rows come from every directory; naming this one would be a lie.
+    return "DSH sessions"
+  end
+  return ("DSH sessions in %s"):format(here())
 end
 
 --- Choose a session with `vim.ui.select` and open it.
@@ -354,15 +390,20 @@ function M.pick()
       return
     end
 
-    if #items == 0 then
-      notify("no sessions yet; creating one")
-      M.new_session()
+    local choices = scoped(items)
+    if #choices == 0 then
+      if #items == 0 then
+        notify("no sessions yet; creating one")
+        M.new_session()
+        return
+      end
+      notify(("no sessions in %s"):format(here()))
       return
     end
 
-    picker.select(items, function(item)
+    picker.select(choices, function(item)
       M.open(item.sessionId)
-    end)
+    end, { prompt = picker_prompt() })
   end)
 end
 
@@ -489,6 +530,7 @@ function M.close(session_id)
   state.sessions[session_id] = nil
 
   if next(state.sessions) == nil then
+    interactions.stop()
     mux.close()
   end
 end
@@ -515,6 +557,7 @@ function M.shutdown()
     end
     state.sessions[session_id] = nil
   end
+  interactions.stop()
   mux.close()
 end
 

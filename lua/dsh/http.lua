@@ -57,13 +57,23 @@ local function curl(args, opts)
 end
 
 --- Exchange a launch token for a session cookie.
+---
+--- `interactions` declares whether this peer may receive and answer forwarded
+--- human interactions (questions and approvals). The long-lived HTTP peer does
+--- not need that capability; the peer that owns the multiplexed socket does,
+--- and it must stay `"none"` for the HTTP peer so the two stay independent.
 --- @param base_url string e.g. "http://127.0.0.1:3080"
 --- @param token string launch token from the `dsh web` URL
 --- @param timeout number|nil
+--- @param interactions "answer"|"none"|nil defaults to "none"
 --- @return string|nil cookie in `name=value` form
 --- @return string|nil error
-function M.connect(base_url, token, timeout)
-  local url = ("%s/connect?token=%s&interactions=none"):format(base_url:gsub("/+$", ""), token)
+function M.connect(base_url, token, timeout, interactions)
+  local url = ("%s/connect?token=%s&interactions=%s"):format(
+    base_url:gsub("/+$", ""),
+    token,
+    interactions or "none"
+  )
   local out, err = curl({
     "--dump-header",
     "-",
@@ -89,6 +99,8 @@ end
 --- @param timeout number|nil
 --- @return any|nil value
 --- @return string|nil error
+--- @return string|nil code DSH error code, e.g. "session/workspace-attach-failed"
+--- @return table|nil details error details, e.g. {sessionId, workspaceId}
 function M.rpc(ctx, endpoint, args, timeout)
   local body = json.encode({
     type = "client-request",
@@ -122,12 +134,19 @@ function M.rpc(ctx, endpoint, args, timeout)
     return nil, "response carried no result"
   end
   if not result.ok then
-    local e = result.error or {}
-    local message = e.message or "request failed"
-    if e.code then
-      message = e.code .. ": " .. message
+    local e = result.error
+    if type(e) ~= "table" then
+      return nil, "request failed"
     end
-    return nil, message
+    local message = type(e.message) == "string" and e.message or "request failed"
+    local code = type(e.code) == "string" and e.code or nil
+    if code then
+      message = code .. ": " .. message
+    end
+    -- `code` and `details` let callers separate "failed before doing anything"
+    -- from "did the work, then failed" (session creation needs that).
+    local details = type(e.details) == "table" and e.details or nil
+    return nil, message, code, details
   end
 
   return result.value

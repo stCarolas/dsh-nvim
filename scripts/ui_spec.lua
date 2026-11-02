@@ -33,6 +33,16 @@ package.loaded["dsh.mux"] = {
   is_connected = function()
     return false
   end,
+  acquire = function(_, callback)
+    callback(nil)
+  end,
+  stream = function()
+    return "events-stream"
+  end,
+  cancel = function() end,
+  credential = function()
+    return "minted"
+  end,
 }
 
 local chat = require("dsh.ui.chat")

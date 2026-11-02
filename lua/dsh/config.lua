@@ -28,6 +28,10 @@ M.defaults = {
   sessions = {
     --- Listing order: "oldest" (least recently used first), "newest", or "none".
     order = "oldest",
+    --- Which sessions a picker offers: "cwd" lists only sessions rooted at
+    --- Neovim's current directory (the workspace being worked in), "all"
+    --- lists every session the server knows.
+    scope = "cwd",
   },
 
   --- Longest tool output rendered, in lines.
@@ -81,16 +85,58 @@ M.defaults = {
     global = {},
   },
 
+  --- Human decisions DSH forwards while a session view is open. Both use
+  --- `vim.ui.select` / `vim.ui.input`, so the user's picker plugin applies.
+  interactions = {
+    --- Answer forwarded interactions at all. Disabling this leaves
+    --- `ask_user_question` calls waiting for another client.
+    enabled = true,
+    --- `ask_user_question` calls: options, multi-select and free-text answers.
+    questions = true,
+    --- Permission prompts for sensitive tool actions (allow once / reject).
+    approvals = true,
+  },
+
   notifications = true,
 }
 
 M.options = vim.deepcopy(M.defaults)
 
+--- Normalize values that would otherwise change behavior silently.
+---
+--- A typo in `sessions.scope` used to hide every session from the picker with
+--- no explanation; any value other than "cwd" or "all" now falls back to "cwd"
+--- with a warning.
+--- @return table options
+function M.validate()
+  local sessions = M.options.sessions
+  if type(sessions) ~= "table" then
+    M.options.sessions = vim.deepcopy(M.defaults.sessions)
+    if M.options.notifications then
+      vim.notify("dsh: sessions config must be a table; using the defaults", vim.log.levels.WARN, { title = "dsh.nvim" })
+    end
+    return M.options
+  end
+
+  if sessions.scope ~= "cwd" and sessions.scope ~= "all" then
+    local invalid = sessions.scope
+    sessions.scope = "cwd"
+    if M.options.notifications then
+      vim.notify(
+        ("dsh: sessions.scope must be \"cwd\" or \"all\" (got %s); using \"cwd\""):format(vim.inspect(invalid)),
+        vim.log.levels.WARN,
+        { title = "dsh.nvim" }
+      )
+    end
+  end
+  return M.options
+end
+
 --- Merge user options over the defaults.
 --- @param opts table|nil
 function M.setup(opts)
-  M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
-  return M.options
+  M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), type(opts) == "table" and opts or {})
+  return M.validate()
 end
 
 return M

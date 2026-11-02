@@ -10,15 +10,15 @@ end
 
 vim.api.nvim_create_user_command("Dsh", function()
   dsh().open()
-end, { desc = "DSH: open or pick a session" })
+end, { desc = "DSH: open or pick a session in this directory" })
 
 vim.api.nvim_create_user_command("DshNew", function(command)
   dsh().new_session({ prompt = command.bang })
-end, { bang = true, desc = "DSH: create a session (bang: prompt immediately)" })
+end, { bang = true, desc = "DSH: create a session in this directory's workspace (bang: prompt immediately)" })
 
 vim.api.nvim_create_user_command("DshSessions", function()
   dsh().pick()
-end, { desc = "DSH: pick a session" })
+end, { desc = "DSH: pick a session in this directory" })
 
 vim.api.nvim_create_user_command("DshPrompt", function()
   dsh().prompt()
@@ -43,10 +43,11 @@ end, { desc = "DSH: stop the dsh web process started by this plugin" })
 vim.api.nvim_create_user_command("DshStatus", function()
   local status = dsh().status()
   if status.running then
-    vim.notify(("dsh: %s (pid %s); websocket %s"):format(
+    vim.notify(("dsh: %s (pid %s); websocket %s; questions %s"):format(
       tostring(status.url),
       tostring(status.pid),
-      status.stream and "connected" or "disconnected"
+      status.stream and "connected" or "disconnected",
+      status.interactions and "ready" or "unavailable"
     ))
   else
     vim.notify("dsh: not connected" .. (status.error and (": " .. status.error) or ""))

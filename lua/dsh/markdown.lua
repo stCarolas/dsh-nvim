@@ -16,7 +16,29 @@ local ITALIC = "DshItalic"
 local STRIKE = "DshStrike"
 local BULLET = "DshBullet"
 
+--- Bytes that can start an inline construct.
+local SPECIAL = "[`!<*_~\\[]"
+
+--- Length in bytes of the UTF-8 character whose first byte is `byte`.
+--- @param byte integer
+--- @return integer
+local function utf8_size(byte)
+  if byte >= 0xF0 then
+    return 4
+  elseif byte >= 0xE0 then
+    return 3
+  elseif byte >= 0xC0 then
+    return 2
+  end
+  return 1
+end
+
 --- Parse inline Markdown, appending spans with absolute rows.
+---
+--- The scan is linear: patterns are anchored and given an init index instead of
+--- re-slicing the remaining text at every byte, and a run of plain characters is
+--- emitted in one slice. The previous version copied the whole suffix per byte,
+--- which made rendering quadratic in message size.
 --- @param text string
 --- @param row number 1-based row the rendered text lands on
 --- @param offset number column where the text starts (after any prefix)
@@ -27,6 +49,11 @@ local function inline(text, row, offset, spans)
   local col = offset
   local index = 1
   local length = #text
+
+  -- Link and image syntax needs a "]( " somewhere. Without that literal, the
+  -- lazy scans below would backtrack over the whole remainder at every "[",
+  -- which a bracketed message turns quadratic.
+  local may_link = text:find("](", 1, true) ~= nil
 
   local function emit(chunk, group)
     if chunk == "" then
@@ -40,61 +67,60 @@ local function inline(text, row, offset, spans)
   end
 
   while index <= length do
-    local rest = text:sub(index)
     local consumed, chunk, group
+    local char = text:sub(index, index)
 
-    local code, code_end = rest:match("^`([^`]+)`()")
-    if code then
-      consumed, chunk, group = code_end, code, INLINE_CODE
-    end
-
-    if not consumed then
-      local alt, url, link_end = rest:match("^!%[(.-)%]%((.-)%)()")
-      if alt then
-        consumed, chunk, group = link_end, alt ~= "" and alt or "image", LINK
-      else
-        local label, target, plain_end = rest:match("^%[(.-)%]%((.-)%)()")
-        if label then
-          consumed, chunk, group = plain_end, label ~= "" and label or target, LINK
+    -- An anchored pattern with an init index tries only at that index, so
+    -- `finish - index + 1` is exactly the number of bytes consumed. A trailing
+    -- `()` position capture must not be used here: it is a 1-based "one past
+    -- the end" index, so treating it as a length skips the byte after each run
+    -- — the space (or comma, or letter) that follows inline code, emphasis or
+    -- a link.
+    if char == "`" then
+      local _, finish, code = text:find("^`([^`]+)`", index)
+      if finish then
+        consumed, chunk, group = finish - index + 1, code, INLINE_CODE
+      end
+    elseif may_link and char == "[" then
+      local _, finish, label, target = text:find("^%[(.-)%]%((.-)%)", index)
+      if finish then
+        consumed, chunk, group = finish - index + 1, label ~= "" and label or target, LINK
+      end
+    elseif may_link and char == "!" and text:sub(index + 1, index + 1) == "[" then
+      local _, finish, alt = text:find("^!%[(.-)%]%((.-)%)", index)
+      if finish then
+        consumed, chunk, group = finish - index + 1, alt ~= "" and alt or "image", LINK
+      end
+    elseif char == "<" then
+      local _, finish, auto = text:find("^<(https?://[^>]+)>", index)
+      if finish then
+        consumed, chunk, group = finish - index + 1, auto, LINK
+      end
+    elseif char == "*" or char == "_" then
+      local _, finish, bold
+      if char == "*" then
+        _, finish, bold = text:find("^%*%*(.-)%*%*", index)
+      end
+      if not finish then
+        _, finish, bold = text:find("^__(.-)__", index)
+      end
+      if finish then
+        consumed, chunk, group = finish - index + 1, bold, BOLD
+      elseif char == "*" then
+        local _, italic_finish, italic = text:find("^%*(.-)%*", index)
+        if italic_finish then
+          consumed, chunk, group = italic_finish - index + 1, italic, ITALIC
         end
       end
-    end
-
-    if not consumed then
-      local auto, auto_end = rest:match("^<(https?://[^>]+)>()")
-      if auto then
-        consumed, chunk, group = auto_end, auto, LINK
+    elseif char == "~" then
+      local _, finish, strike = text:find("^~~(.-)~~", index)
+      if finish then
+        consumed, chunk, group = finish - index + 1, strike, STRIKE
       end
-    end
-
-    if not consumed then
-      local bold, bold_end = rest:match("^%*%*(.-)%*%*()")
-      if not bold then
-        bold, bold_end = rest:match("^__(.-)__()")
-      end
-      if bold then
-        consumed, chunk, group = bold_end, bold, BOLD
-      end
-    end
-
-    if not consumed then
-      local strike, strike_end = rest:match("^~~(.-)~~()")
-      if strike then
-        consumed, chunk, group = strike_end, strike, STRIKE
-      end
-    end
-
-    if not consumed then
-      local italic, italic_end = rest:match("^%*(.-)%*()")
-      if italic then
-        consumed, chunk, group = italic_end, italic, ITALIC
-      end
-    end
-
-    if not consumed then
-      local escaped, escaped_end = rest:match("^\\(.)()")
-      if escaped then
-        consumed, chunk, group = escaped_end, escaped, nil
+    elseif char == "\\" then
+      local _, finish, escaped = text:find("^\\(.)", index)
+      if finish then
+        consumed, chunk, group = finish - index + 1, escaped, nil
       end
     end
 
@@ -102,18 +128,13 @@ local function inline(text, row, offset, spans)
       emit(chunk, group)
       index = index + consumed
     else
-      -- Consume one whole UTF-8 character so multibyte text never splits.
-      local byte = rest:byte(1)
-      local size = 1
-      if byte >= 0xF0 then
-        size = 4
-      elseif byte >= 0xE0 then
-        size = 3
-      elseif byte >= 0xC0 then
-        size = 2
-      end
-      emit(rest:sub(1, size))
-      index = index + size
+      -- No construct starts here: copy plain bytes up to the next candidate in
+      -- one slice. The search starts past this character so a lone special
+      -- character is still emitted as text, and it stops before an ASCII byte,
+      -- which can never split a UTF-8 sequence.
+      local stop = text:find(SPECIAL, index + utf8_size(text:byte(index))) or (length + 1)
+      emit(text:sub(index, stop - 1))
+      index = stop
     end
   end
 

@@ -254,6 +254,100 @@ check("user prompt not styled bold", (function()
   return true
 end)())
 
+-- 10b. Inline markup must not swallow the byte after it. Every run used to be
+-- advanced by its 1-based end position instead of its length, skipping the
+-- character that followed — usually the space around `code` and **bold**.
+local inline_cases = {
+  { "The `variable` holds a value.", "The variable holds a value." },
+  { "Some **bold**, then more.", "Some bold, then more." },
+  { "A *slight* pause, then text.", "A slight pause, then text." },
+  { "See [the docs](https://x.dev) for detail.", "See the docs for detail." },
+  { "This ~~old~~ thing stays.", "This old thing stays." },
+  { "Visit <https://x.dev> now.", "Visit https://x.dev now." },
+  { "Glue **a**`b`**c**. end", "Glue abc. end" },
+  { "Escaped \\* star.", "Escaped * star." },
+  { "Run `x` → done, 日本語.", "Run x → done, 日本語." },
+}
+
+for _, case in ipairs(inline_cases) do
+  local rendered = markdown.render(case[1], { code_highlight = false })
+  local line = rendered.lines[1]
+  check("inline text intact: " .. case[1], line == case[2], tostring(line))
+  local code_span = span_text(rendered, "DshCode")
+  if case[1]:find("`", 1, true) then
+    local expected = case[1]:match("`([^`]+)`")
+    check("inline code span aligns: " .. case[1], code_span == expected, tostring(code_span))
+  end
+end
+
+-- The same guarantee holds end to end, through the composed chat view.
+check(
+  "inline spacing survives composition",
+  contains(compose_lines({
+    { role = "assistant", text = "Set the `variable` and **retry** the call." },
+  }), "Set the variable and retry the call.")
+)
+
+-- 10c. Incomplete constructs render literally instead of being dropped.
+local degenerate_cases = {
+  { "`unclosed code", "`unclosed code" },
+  { "__unclosed bold", "__unclosed bold" },
+  { "~~unclosed strike", "~~unclosed strike" },
+  { "[label](unclosed", "[label](unclosed" },
+  { "<https://unclosed", "<https://unclosed" },
+  { "\\", "\\" },
+  { "a**b**c*d*e", "abcde" },
+  { "plain [[[[ text ]]]] tail", "plain [[[[ text ]]]] tail" },
+  { "mixed `a` and **b** and *c* end", "mixed a and b and c end" },
+}
+
+for _, case in ipairs(degenerate_cases) do
+  local rendered = markdown.render(case[1], { code_highlight = false })
+  check("degenerate inline: " .. case[1], rendered.lines[1] == case[2], tostring(rendered.lines[1]))
+end
+
+-- 10d. Rendering stays linear. The scanner used to re-slice the remaining text
+-- at every byte, so a long message was quadratic (hundreds of KiB froze the UI).
+local big_message = string.rep("plain words and `code` ", 9000)
+local started = (vim.uv or vim.loop).hrtime()
+markdown.render(big_message, { code_highlight = false })
+local elapsed_ms = ((vim.uv or vim.loop).hrtime() - started) / 1e6
+check("large message renders quickly", elapsed_ms < 3000, ("%.0f ms"):format(elapsed_ms))
+
+-- 10e. A session title is untrusted: `'winbar'` must show it literally and
+-- never evaluate it. The title is LLM-generated, and `%{…}` is Vimscript.
+local escaped_plain = render.winbar("Improve 50% coverage", "idle")
+local ok_plain, plain_error = pcall(function()
+  vim.wo.winbar = escaped_plain
+end)
+check("winbar accepts a percent title", ok_plain, tostring(plain_error))
+local ok_view, viewed = pcall(vim.api.nvim_eval_statusline, vim.wo.winbar, {
+  winid = vim.api.nvim_get_current_win(),
+})
+check(
+  "winbar shows the percent literally",
+  ok_view and viewed.str:find("50% coverage", 1, true) ~= nil,
+  ok_view and tostring(viewed.str) or tostring(viewed)
+)
+
+vim.g.dsh_winbar_pwned = nil
+local hostile = render.winbar("%{execute('let g:dsh_winbar_pwned = 1')}", "idle")
+local ok_hostile, hostile_error = pcall(function()
+  vim.wo.winbar = hostile
+end)
+check("winbar accepts an expression title", ok_hostile, tostring(hostile_error))
+local ok_hostile_view, hostile_view = pcall(vim.api.nvim_eval_statusline, vim.wo.winbar, {
+  winid = vim.api.nvim_get_current_win(),
+})
+check("winbar does not execute the title", vim.g.dsh_winbar_pwned == nil, tostring(vim.g.dsh_winbar_pwned))
+check(
+  "winbar shows the expression literally",
+  ok_hostile_view and hostile_view.str:find("%{execute", 1, true) ~= nil,
+  ok_hostile_view and tostring(hostile_view.str) or tostring(hostile_view)
+)
+vim.wo.winbar = ""
+check("winbar flattens line breaks", not render.winbar("line one\nline two", nil):find("\n", 1, true))
+
 -- 10. Markdown can be disabled.
 config.options.markdown.enabled = false
 local plain = compose_lines({ { role = "assistant", text = "# Release notes" } })

@@ -35,6 +35,19 @@ function M.is_connected()
   return shared.conn ~= nil and shared.conn.open == true
 end
 
+--- Credential of the peer that owns the open socket.
+---
+--- DSH ties forwarded human interactions to the peer that opened their stream:
+--- another peer's answer is rejected. Answer RPCs that belong to a stream on
+--- this socket must therefore send this cookie, not the long-lived HTTP one.
+--- @return string|nil
+function M.credential()
+  if shared.conn and shared.conn.open then
+    return shared.cookie
+  end
+  return nil
+end
+
 local function dispatch(text)
   local ok, message = pcall(json.decode, text)
   if not ok or type(message) ~= "table" then

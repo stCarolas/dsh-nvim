@@ -1,0 +1,3 @@
+# Neovim writes this next to its working directory when its log file is not
+# writable; the spec scripts recreate it on every run.
+/.nvimlog

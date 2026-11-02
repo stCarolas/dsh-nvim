@@ -50,9 +50,17 @@ function M.check()
     vim.health.info("websocket opens with the first session view")
   end
 
+  if not config.interactions.enabled then
+    vim.health.info("human interactions disabled (interactions.enabled = false)")
+  elseif require("dsh.interactions").is_ready() then
+    vim.health.ok("question and approval prompts are ready ($events stream)")
+  else
+    vim.health.info("question and approval prompts open with the first session view")
+  end
+
   vim.health.start("dsh.nvim transports")
-  vim.health.info("HTTP  POST /api/<namespace>/<method> for unary calls (list, create, page, prompt, cancel)")
-  vim.health.info("WS    /api/remote.mux logical streams for session/follow (live events and token deltas)")
+  vim.health.info("HTTP  POST /api/<namespace>/<method> for unary calls (list, create, page, prompt, cancel, workspace)")
+  vim.health.info("WS    /api/remote.mux logical streams for session/follow and $events")
   vim.health.info("DSH rejects unary methods on the stream carrier, so both transports are required")
 end
 

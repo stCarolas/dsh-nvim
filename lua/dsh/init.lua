@@ -42,13 +42,13 @@ function M.open(session_id)
   require("dsh.ui.chat").open(session_id)
 end
 
---- Create a session in the current directory and open it.
+--- Create a session in the current directory's workspace and open it.
 --- @param opts {prompt: boolean|nil}|nil
 function M.new_session(opts)
   require("dsh.ui.chat").new_session(opts)
 end
 
---- Pick a session with Neovim's UI select and open it.
+--- Pick a session rooted at the current directory and open it.
 function M.pick()
   require("dsh.ui.chat").pick()
 end
@@ -83,6 +83,7 @@ end
 function M.status()
   local status = server.describe()
   status.stream = require("dsh.mux").is_connected()
+  status.interactions = require("dsh.interactions").is_ready()
   return status
 end
 
