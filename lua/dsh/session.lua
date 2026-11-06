@@ -177,6 +177,36 @@ function M.filter_directory(items, cwd, platform)
   return filtered
 end
 
+--- Whether a SessionSummary is a root session (not spawned by a subagent).
+---
+--- DSH marks child sessions with `origin = "subagent"` and/or the session that
+--- spawned them; both are checked so older and newer server shapes work.
+--- @param item table
+--- @return boolean
+function M.is_root(item)
+  if type(item) ~= "table" then
+    return false
+  end
+  local parent = item.parentSessionId
+  if type(parent) == "string" and parent ~= "" then
+    return false
+  end
+  return item.origin ~= "subagent"
+end
+
+--- Keep only root sessions.
+--- @param items table[]
+--- @return table[]
+function M.filter_roots(items)
+  local roots = {}
+  for _, item in ipairs(type(items) == "table" and items or {}) do
+    if M.is_root(item) then
+      roots[#roots + 1] = item
+    end
+  end
+  return roots
+end
+
 --- Every visible session, ordered by `sessions.order`.
 --- @param ctx {url: string, cookie: string}
 --- @return table[]|nil items
@@ -359,6 +389,22 @@ function M.short_id(session_id)
   return id:sub(1, 8)
 end
 
+--- Keep at most `limit` characters of `text`.
+---
+--- Tool arguments may contain any UTF-8 (paths, prompts, file contents). Byte
+--- slicing can split a multibyte sequence and leave the chat buffer with bytes
+--- `vim.fn.json_encode` (and completion clients) reject with E474, so truncation
+--- must count characters, never bytes.
+--- @param text string
+--- @param limit integer
+--- @return string
+local function truncate(text, limit)
+  if vim.fn.strchars(text) <= limit then
+    return text
+  end
+  return vim.fn.strcharpart(text, 0, limit)
+end
+
 --- Pretty one-line tool arguments.
 function M.summarize_arguments(raw)
   if type(raw) ~= "string" or raw == "" then
@@ -366,20 +412,20 @@ function M.summarize_arguments(raw)
   end
   local ok, decoded = pcall(json.decode, raw)
   if not ok or type(decoded) ~= "table" then
-    return raw:gsub("%s+", " "):sub(1, 120)
+    return truncate(raw:gsub("%s+", " "), 120)
   end
   local parts = {}
   for key, value in pairs(decoded) do
     local rendered
     if type(value) == "string" then
-      rendered = value:gsub("%s+", " "):sub(1, 80)
+      rendered = truncate(value:gsub("%s+", " "), 80)
     else
       rendered = json.encode(value)
     end
     parts[#parts + 1] = ("%s=%s"):format(key, rendered)
   end
   table.sort(parts)
-  return table.concat(parts, " "):sub(1, 160)
+  return truncate(table.concat(parts, " "), 160)
 end
 
 return M

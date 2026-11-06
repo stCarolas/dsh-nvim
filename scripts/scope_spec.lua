@@ -331,6 +331,31 @@ check("invalid scope is reported", notified[1] ~= nil and notified[1]:find("sess
 config.setup({ sessions = { scope = "all" } })
 check("valid scope is kept", config.options.sessions.scope == "all", tostring(config.options.sessions.scope))
 
+notified = {}
+config.setup({ sessions = { include_subagents = "no" } })
+check(
+  "invalid include_subagents falls back to true",
+  config.options.sessions.include_subagents == true,
+  tostring(config.options.sessions.include_subagents)
+)
+check(
+  "invalid include_subagents is reported",
+  notified[1] ~= nil and notified[1]:find("include_subagents") ~= nil,
+  tostring(notified[1])
+)
+
+check("plain summaries are root sessions", session.is_root({ sessionId = "x" }))
+check("parented summaries are not root sessions", not session.is_root({ parentSessionId = "session-parent" }))
+check("subagent origins are not root sessions", not session.is_root({ origin = "subagent" }))
+check(
+  "filter_roots keeps only root sessions",
+  #session.filter_roots({
+    { sessionId = "root" },
+    { sessionId = "child", parentSessionId = "root" },
+    { sessionId = "child2", origin = "subagent" },
+  }) == 1
+)
+
 --------------------------------------------------------------------------------
 -- 10. A failed list reports; an empty list creates and opens a session.
 --------------------------------------------------------------------------------
@@ -384,6 +409,37 @@ reset_calls()
 chat.pick()
 check("picker selection opens the chosen session", opened[1] == "session-aaaaaaaa", tostring(opened[1]))
 check("picker selection creates nothing", #calls_to("session/create") == 0)
+
+--------------------------------------------------------------------------------
+-- 12. Subagent sessions can be hidden from the picker.
+--------------------------------------------------------------------------------
+local mixed_sessions = {
+  { sessionId = "session-rootaaaa", updatedAt = 1, cwd = project },
+  { sessionId = "session-rootbbbb", updatedAt = 2, cwd = tmp },
+  { sessionId = "session-childccc", updatedAt = 3, cwd = project, parentSessionId = "session-rootaaaa" },
+  { sessionId = "session-childddd", updatedAt = 4, cwd = project, origin = "subagent" },
+}
+handlers["session/list"] = function()
+  return { items = vim.deepcopy(mixed_sessions) }
+end
+local root_choices = {}
+vim.ui.select = function(labels, _, callback)
+  root_choices[#root_choices + 1] = labels
+  callback(nil)
+end
+
+config.setup({ notifications = false, sessions = { scope = "cwd", include_subagents = true } })
+chat.pick()
+check("subagent sessions are listed by default", #root_choices[1] == 3, tostring(#root_choices[1]))
+
+config.setup({ notifications = false, sessions = { scope = "cwd", include_subagents = false } })
+chat.pick()
+check("include_subagents=false lists only root sessions", #root_choices[2] == 1, tostring(#root_choices[2]))
+
+config.setup({ notifications = false, sessions = { scope = "all", include_subagents = false } })
+chat.pick()
+check("root filter also applies to scope=all", #root_choices[3] == 2, tostring(#root_choices[3]))
+
 chat.open = real_open
 
 chat.shutdown()

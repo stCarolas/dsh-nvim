@@ -36,6 +36,24 @@ local function seed_live(baseline)
   return live
 end
 
+--- Whether the newest durable turn in a record window is still open.
+---
+--- Snapshots may start mid-turn, so walk backwards to the nearest boundary.
+--- @param records table[]
+--- @return boolean
+local function records_running(records)
+  for index = #(records or {}), 1, -1 do
+    local event = records[index].event
+    local kind = type(event) == "table" and event.type or nil
+    if kind == "turn/end" then
+      return false
+    elseif kind == "turn/start" then
+      return true
+    end
+  end
+  return false
+end
+
 --- Follow one session over the shared mux.
 --- @param ctx {url: string, cookie: string}
 --- @param session_id string
@@ -113,6 +131,13 @@ function M.attach(ctx, session_id, callbacks)
     end
   end
 
+  --- A live frame proves a turn is running even if its `turn/start` was missed.
+  local function mark_streaming()
+    if state.status ~= "streaming" then
+      set_status("streaming")
+    end
+  end
+
   local function handle_live_frame(frame)
     if type(frame) ~= "table" then
       return
@@ -120,6 +145,7 @@ function M.attach(ctx, session_id, callbacks)
     if frame.type == "start" then
       state.live = empty_live()
       state.live.active = true
+      mark_streaming()
       emit(false)
     elseif frame.type == "chunk" then
       local chunk = frame.chunk
@@ -129,9 +155,11 @@ function M.attach(ctx, session_id, callbacks)
       if chunk.type == "text-delta" and type(chunk.text) == "string" then
         state.live.active = true
         state.live.text = state.live.text .. chunk.text
+        mark_streaming()
         emit(false)
       elseif chunk.type == "reasoning-delta" and type(chunk.text) == "string" and config.options.show_reasoning then
         state.live.reasoning = state.live.reasoning .. chunk.text
+        mark_streaming()
         emit(false)
       end
     elseif frame.type == "end" then
@@ -160,13 +188,17 @@ function M.attach(ctx, session_id, callbacks)
         state.title = values.title
       end
       state.live = seed_live(value.assistantStream)
-      set_status("streaming")
+      set_status((records_running(state.records) or state.live.active) and "streaming" or "idle")
       emit(true)
     elseif value.type == "event" then
       state.records[#state.records + 1] = value
       local event = value.event or {}
       if event.type == "assistant/message" then
         state.live = empty_live()
+      elseif event.type == "turn/start" then
+        set_status("streaming")
+      elseif event.type == "turn/end" then
+        set_status("idle")
       elseif event.type == "session/title" then
         local data = event.data or {}
         if type(data.title) == "string" and data.title ~= "" then

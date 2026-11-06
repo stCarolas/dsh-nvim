@@ -20,16 +20,19 @@ The retry loop copies the backoff value before the jitter is applied.
   end
 
   ⚙ read(path=src/retry.ts)
-  ↳ 1  export function retry(fn, opts) {
-  ↳ … 42 more lines
+    1  export function retry(fn, opts) {
+    … 42 more lines
 ```
 
 Assistant output is rendered as Markdown: headings, bullet and numbered lists, task
 checkboxes, blockquotes, rules and inline emphasis are styled, fenced code is indented and
 syntax-highlighted with treesitter when that language's parser is installed, and fence
-languages appear as virtual text (never in the buffer contents). Prompts you type are echoed
-verbatim, so Markdown in your own text is left alone. When the agent needs a decision, the
-plugin asks through `vim.ui.select` / `vim.ui.input`, so your picker plugin handles it.
+languages appear as virtual text (never in the buffer contents). Tool results are kept
+verbatim as a code block tabulated one level under the call (`DshCodeBlock`), truncated to
+`tool_output_lines` rows with the remainder counted — failed output keeps its error highlight.
+Prompts you type are echoed verbatim, so Markdown in your own text is left alone. When the
+agent needs a decision, the plugin asks through `vim.ui.select` / `vim.ui.input`, so your
+picker plugin handles it.
 
 ## Requirements
 
@@ -37,10 +40,51 @@ plugin asks through `vim.ui.select` / `vim.ui.input`, so your picker plugin hand
 |---|---|
 | Neovim | 0.10+ (`vim.uv`, `vim.system`, `vim.json`) |
 | `curl` | HTTP transport for unary calls |
-| `dsh` | on `PATH`, or `npx` for the `@deepseek-ai/dsh` fallback |
+| `dsh` | on `PATH`, or `npx` for the `@deepseek-ai/dsh@latest` fallback |
 
 The plugin **boots and owns its own `dsh web` process** (`--port 0`, so it never collides with a
-server you already run) and stops it when Neovim exits.
+server you already run) and stops it when Neovim exits. Set `shared = true` to use one detached
+server for every Neovim instance instead, or `url` to attach to a server you manage — see
+[Shared server](#shared-server).
+
+## Shared server
+
+DSH serves many clients from one process, so the plugin can share a single `dsh web` across
+Neovim instances:
+
+```lua
+require("dsh").setup({ shared = true })
+```
+
+The first instance boots the server detached and records its URL and launch token in
+`stdpath("run")/dsh-nvim/server.json` (directory `0700`, file `0600`); later instances attach
+to it and mint their own peer cookie. The server outlives the Neovim that started it, and
+`:DshStop` in any instance stops it for everyone. `shared_dir` moves the registry and log file.
+
+To use a server you manage yourself (systemd, tmux, the web UI), pass its printed URL including
+the token:
+
+```lua
+require("dsh").setup({ url = "http://127.0.0.1:3080/?token=…" })
+```
+
+The plugin then only connects: it never starts or stops that server, and `auto_start = false`
+still allows the attach.
+
+Warm the server up from a startup script so the first session opens instantly:
+
+```sh
+# Exits 0 once the server is ready, 1 if it failed; needs shared = true or url.
+nvim --headless -c 'DshWarmup!' >/dev/null 2>&1
+```
+
+Without `!`, `:DshWarmup` waits for readiness, reports the URL, and leaves Neovim running (a
+private server cannot be warmed up, because it stops with the Neovim that started it).
+
+Every instance sees the same DSH sessions (subject to `sessions.scope`). Human interactions are
+forwarded to every answering client, so with the web UI or several Neovim instances connected,
+each one shows the same question or approval and the first answer settles it; set
+`interactions.enabled = false` in instances that should not prompt.
 
 ## Install
 
@@ -66,28 +110,67 @@ Or manually, then `:helptags doc` and `:help dsh`.
 |---|---|
 | `:Dsh` | open the current session, or pick one in this directory |
 | `:DshNew` | create a session in this directory's workspace and open it |
-| `:DshNew!` | same, then open the prompt popup |
+| `:DshNew!` | same, then open the prompt |
 | `:DshSessions` | pick a session rooted at the current directory |
-| `:DshPrompt` | prompt popup for the current session |
+| `:DshMenu` | nested menu: new session, open session, skills, commands |
+| `:DshPrompt` | prompt for the current session |
 | `:DshRefresh` | re-open the stream and re-read history |
 | `:DshCancel` | cancel the running turn |
 | `:DshClose` | close the session view |
-| `:DshStop` | stop the `dsh web` process the plugin started |
+| `:DshDelete` | delete (archive) the current session; `:DshDelete!` skips the confirmation |
+| `:DshWarmup` | boot/attach the server and wait; `:DshWarmup!` exits 0 when ready, 1 on failure |
+| `:DshStop` | stop the DSH server (shared included), or detach from an attached one |
 | `:DshStatus` | server, WebSocket and question status |
 | `:checkhealth dsh` | diagnostics |
+
+## Menu
+
+`:DshMenu` (or a `keymaps.global.menu` mapping) opens a nested `vim.ui.select` menu:
+
+- **new session** — create a session in this directory's workspace and open it.
+- **open session…** — pick one of this workspace's sessions, the same filtered list as
+  `:DshSessions`.
+- **dsh skills…** — list the session's human-invocable skills (`skills/list`). Choosing one
+  opens the prompt prefilled with `/skill-name `; type the task and send it, and DSH injects
+  the skill instructions on that prompt.
+- **dsh commands…** — list the session's slash commands (`commands/list`). A command that
+  advertises input asks for it with `vim.ui.input`; the line then runs through
+  `commands/execute` and its result text is notified.
+
+Skills and commands are session-scoped. The menu resolves its target session when it opens: the
+view at the cursor, or the most recently used view still open in another tab or window. Only
+when no view is open at all does it offer the session picker first, open the chosen session, and
+continue with the submenu. `<Esc>` cancels any level.
 
 ## Chat buffer keys
 
 | Key | Action |
 |---|---|
-| `<CR>` | open the prompt popup |
+| `<CR>` | open the prompt |
 | `R` | re-open the stream |
 | `<localleader>s` | pick another session |
 | `<C-c>` | cancel the running turn |
 | `q` | close the view |
 
-In the popup: `<C-s>` sends, `<CR>` sends (normal mode), `<Esc>` cancels.
-Enter inserts newlines in insert mode, so multi-line prompts work.
+In the floating prompt popup: `<C-s>` sends, `<CR>` sends (normal mode), and `<Esc>` or `q`
+cancels. Enter inserts newlines in insert mode, so multi-line prompts work.
+
+`prompt.open_in = "split"` types the prompt in a scratch buffer in its own window instead of
+the popup — handy for long prompts. `<C-s>` sends from either mode and normal-mode `q`
+cancels; `<Esc>` keeps its normal buffer meaning (leaving insert mode), so the window is only
+dismissed with `q`. Closing the window (`:q`) cancels too.
+
+Closing the prompt returns to the session view in normal mode. After a send the cursor is put
+on the newest line, so the reply keeps scrolling into view as the stream appends it.
+
+Each session view is a scratch buffer named after the DSH session title, e.g.
+`dsh://Fix the flaky retry test`. Until DSH titles the session the name falls back to
+`dsh://<short id>`; the name follows retitles, and two sessions with the same title get the
+session id appended (`dsh://Fix the flaky retry test (1a2b3c4d)`). The `dsh://` scheme keeps
+Neovim from treating the title as a file path relative to the cwd.
+
+Session views and prompt buffers are **unlisted**: they never appear in `:ls`, `:bnext` /
+`:bp`, or bufferline-style lists. You switch sessions with `:Dsh`, `:DshSessions` and the menu.
 
 ## Questions and approvals
 
@@ -114,19 +197,53 @@ open, so the model does not time out mid-decision; an answer given after DSH rel
 wait arrives as a follow-up turn. `interactions.questions`, `interactions.approvals` and
 `interactions.enabled` turn the behaviour off.
 
+## Tree-sitter
+
+The `dshchat` filetype has a bundled Tree-sitter grammar in `tree-sitter-dshchat/`; the
+generated `src/parser.c` is committed, so only a C compiler is needed to build it. Queries
+live in `queries/dshchat/` (`highlights.scm`, `folds.scm`). The grammar is line oriented: the
+first text line after a header is typed `user_prompt` / `assistant_message_header`, later
+message lines stay `text`, and each tool call groups its indented output.
+
+With nvim-treesitter installed the parser is registered automatically, so this builds it
+from the plugin checkout — no network access, and the `tree-sitter` CLI is only needed to
+regenerate `grammar.js`:
+
+```vim
+:TSInstall dshchat
+```
+
+Without nvim-treesitter, build the parser onto the plugin runtimepath instead:
+
+```sh
+scripts/build_parser.sh      # writes parser/dshchat.so
+```
+
+The renderer's extmarks still own the styling; Tree-sitter adds structure for folds over
+rendered code and tool-output blocks, incremental selection and `:InspectTree`, and its
+highlight captures reuse the same `Dsh…` groups. `treesitter = false` turns the wiring off.
+
 ## Configuration
 
 ```lua
 require("dsh").setup({
-  cmd = nil,                  -- nil => {"dsh"} if present, else {"npx","--yes","@deepseek-ai/dsh"}
+  cmd = nil,                  -- nil => {"dsh"} if present, else {"npx","--yes","@deepseek-ai/dsh@latest"}
   port = 0,                   -- 0 => OS-assigned
   cwd = nil,                  -- server working directory (default: Neovim's cwd)
   auto_start = true,
+  url = nil,                  -- attach to a running server (printed URL incl. token)
+  shared = false,             -- share one detached server across Neovim instances
+  shared_dir = nil,           -- registry/log directory (default: stdpath("run")/dsh-nvim)
   startup_timeout = 120000,   -- first launch may install the dsh profile
   request_timeout = 60000,
   max_messages = 200,         -- messages in the follow snapshot / history page
-  sessions = { order = "oldest", scope = "cwd" }, -- scope: "cwd" | "all"
-  tool_output_lines = 8,      -- tool output rendered before truncation
+  sessions = {
+    order = "oldest",         -- "oldest" | "newest" | "none"
+    scope = "cwd",            -- "cwd" | "all"
+    include_subagents = true, -- false => list only root sessions
+    include_archived = false, -- true => list deleted/archived sessions too
+  },
+  tool_output_lines = 8,      -- tool output rows shown as a code block
   stream = {
     enabled = true,           -- false => read history once per open/refresh over HTTP
     render_interval = 60,     -- coalesce chunks into at most one render per N ms
@@ -134,6 +251,7 @@ require("dsh").setup({
     reconnect_delay = 1500,
   },
   show_reasoning = false,
+  treesitter = true,          -- register/start the bundled dshchat parser
   markdown = {
     enabled = true,           -- render agent output as Markdown
     code_highlight = true,    -- treesitter highlighting inside fenced code
@@ -145,6 +263,13 @@ require("dsh").setup({
     split = "vertical",       -- orientation when open_in = "split"
     width = 100,
     height = 20,
+    show_title = true,        -- write the session title as the first buffer line
+  },
+  prompt = {
+    open_in = "float",        -- "float" (popup) | "split" (scratch buffer window)
+    split = "horizontal",     -- orientation when open_in = "split"
+    width = 80,               -- columns for "vertical"
+    height = 10,              -- rows for "horizontal"
   },
   interactions = {
     enabled = true,           -- answer forwarded questions and approvals
@@ -159,6 +284,19 @@ Set `chat.open_in = "tab"` to give every session its own tab page instead of a s
 window. Reopening a session focuses its existing tab, and closing the view closes the tab it
 owns. The old spelling `chat.split = "tab"` still works.
 
+`chat.show_title = false` omits the `# Title` line at the top of the session buffer; the
+winbar keeps showing the session title while the session is idle.
+
+The winbar reads `dsh · <title> · <status>`. While a turn runs (`streaming`), it replaces the
+title with the newest assistant message, clipped to the window width; when the turn settles
+(`idle`) the title returns. The buffer name keeps the session title in both states.
+
+`prompt.open_in = "split"` puts prompt entry in a separate window backed by a
+`dsh://prompt/<n>` scratch buffer (`filetype=dsh-prompt`, so a `FileType` autocmd can add
+spell checking and the like) instead of the floating popup. `prompt.split` picks the
+orientation, and `prompt.width` / `prompt.height` size the window. Both keys normalize to
+`"float"` / `"horizontal"` with a warning when misspelled, and the popup stays the default.
+
 Sessions are scoped to the directory Neovim runs in. `:DshNew` resolves (or registers) the DSH
 workspace for that directory and creates the session inside it, so new sessions appear under the
 same project in the DSH web UI, and `:DshSessions` lists only sessions whose cwd is that
@@ -166,7 +304,15 @@ directory — including symlinked spellings of it. `sessions.order` controls how
 ordered: `"oldest"` (default), `"newest"`, or `"none"` for the server order. Set
 `sessions.scope = "all"` to list every session on the server again; the picker prompt drops the
 directory name in that mode. Any other value is rejected with a warning and falls back to
-`"cwd"`, so a typo cannot silently hide every session.
+`"cwd"`, so a typo cannot silently hide every session. `sessions.include_subagents = false`
+hides sessions spawned by subagents (`parentSessionId`/`origin = "subagent"`), leaving only root
+sessions in `:DshSessions`, `:Dsh`, and the menu's picker; the default keeps listing them.
+
+`:DshDelete` deletes the current session view. DSH has no hard delete, so this is its archive
+operation: running work is stopped, the session disappears from the Web UI sidebar and from
+this plugin's pickers, and the transcript stays on disk (unarchive it in the Web UI to get it
+back). Pickers hide archived sessions by default; set `sessions.include_archived = true` to
+list them again. `:DshDelete!` skips the confirmation prompt.
 
 If DSH creates the session but then fails to attach it to the workspace, the error carries the
 new session id: the plugin opens that session and warns instead of creating a second one. Only
@@ -178,9 +324,10 @@ a plain `cwd` session.
 DSH's web UI is not a documented REST API, so this plugin drives the real protocols the UI uses.
 
 **1. Auth — launch-token exchange.** `dsh web --port 0 --no-open` prints
-`dsh web: http://127.0.0.1:<port>/?token=<launch-token>`. That token exists only in that line, so
-the plugin scrapes it from stdout and calls `GET /connect?token=…&interactions=none`, which
-answers with a signed, authority-bound cookie. Socket peers are minted separately with
+`dsh web: http://127.0.0.1:<port>/?token=<launch-token>`. That token is printed only in that
+line (shared mode records it in the private registry so other instances can attach), so the
+plugin scrapes it from stdout and calls `GET /connect?token=…&interactions=none`, which answers
+with a signed, authority-bound cookie. Socket peers are minted separately with
 `interactions=answer`, because only such a peer may receive and answer human decisions.
 
 **2. Unary calls — HTTP.** `POST /api/<namespace>/<method>` with the cookie:
@@ -280,9 +427,17 @@ nvim --headless -l scripts/spec.lua               # rendering/UI specs, no serve
 nvim --headless -l scripts/scope_spec.lua         # cwd workspace scoping, with stubbed transports
 nvim --headless -l scripts/ui_spec.lua            # tab vs split placement, with stubbed transports
 nvim --headless -l scripts/interactions_spec.lua  # questions/approvals via scripted vim.ui
+nvim --headless -l scripts/menu_spec.lua          # nested vim.ui menu, skills and commands
+nvim --headless -l scripts/delete_spec.lua        # session deletion (archive), with stubbed transports
+nvim --headless -l scripts/server_spec.lua        # attach/shared server discovery, with stubbed transports
+nvim --headless -l scripts/treesitter_spec.lua    # dshchat grammar, queries and wiring
 nvim --headless -l scripts/ws_spec.lua            # WebSocket transport: handshake, streams, heartbeat
 nvim --headless -l scripts/smoke.lua              # boots dsh web and drives the full UI path
 ```
+
+`treesitter_spec.lua` compiles `tree-sitter-dshchat/src/parser.c` to a temporary library when
+`parser/dshchat.so` is not already on the runtimepath. `scripts/build_parser.sh` builds that
+library in the checkout for interactive use.
 
 `smoke.lua` points `$DSH_HOME` at a temporary directory, so a run cannot touch the projects,
 sessions or profile in your real DSH home; the directory is deleted when the run ends.

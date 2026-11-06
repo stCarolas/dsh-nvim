@@ -27,14 +27,22 @@ function M.check()
   elseif vim.fn.executable("dsh") == 1 then
     vim.health.ok("`dsh` found on PATH")
   elseif vim.fn.executable("npx") == 1 then
-    vim.health.warn("`dsh` not on PATH; will fall back to `npx --yes @deepseek-ai/dsh`")
+    vim.health.warn("`dsh` not on PATH; will fall back to `npx --yes @deepseek-ai/dsh@latest`")
   else
     vim.health.error("neither `dsh` nor `npx` is available; install DeepSeek Harness")
   end
 
   local describe = require("dsh.server").describe()
   if describe.running then
-    vim.health.ok("connected to " .. tostring(describe.url) .. " (pid " .. tostring(describe.pid) .. ")")
+    local mode = describe.mode and (" [" .. describe.mode .. "]") or ""
+    vim.health.ok("connected to " .. tostring(describe.url) .. " (pid " .. tostring(describe.pid) .. ")" .. mode)
+    if describe.registry then
+      vim.health.info("shared server registry: " .. describe.registry)
+    end
+  elseif config.url then
+    vim.health.info("no connection yet; `url` attaches to an external server on first use")
+  elseif config.shared then
+    vim.health.info("no shared server yet; it boots detached on first use")
   else
     vim.health.info("no server started yet; it boots on first use")
   end
@@ -56,6 +64,14 @@ function M.check()
     vim.health.ok("question and approval prompts are ready ($events stream)")
   else
     vim.health.info("question and approval prompts open with the first session view")
+  end
+
+  if not config.treesitter then
+    vim.health.info("Tree-sitter wiring disabled (treesitter = false)")
+  elseif require("dsh.treesitter").parser_available() then
+    vim.health.ok("dshchat Tree-sitter parser available")
+  else
+    vim.health.info("dshchat Tree-sitter parser missing; run `:TSInstall dshchat` or scripts/build_parser.sh")
   end
 
   vim.health.start("dsh.nvim transports")

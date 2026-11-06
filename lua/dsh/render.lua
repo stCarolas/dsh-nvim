@@ -13,6 +13,11 @@ local namespace = vim.api.nvim_create_namespace("dsh-chat")
 local BASE_PRIORITY = 4096
 local SPAN_PRIORITY = 4100
 
+--- Tool results render as an indented code block nested under the
+--- `  ⚙ name(args)` call line. Four spaces is Markdown's indented-code-block
+--- level, and it aligns the code with the tool name after the call prefix.
+local TOOL_CODE_INDENT = "    "
+
 --- Default highlight groups.
 function M.define_highlights()
   local groups = {
@@ -115,7 +120,10 @@ function M.compose(entries)
 
   for _, entry in ipairs(entries) do
     if entry.role == "title" then
-      state.push("# " .. entry.text, "DshTitle")
+      -- The winbar already carries the title; this is the optional buffer line.
+      if config.options.chat.show_title ~= false then
+        state.push("# " .. entry.text, "DshTitle")
+      end
     elseif entry.role == "user" then
       blank()
       state.push("▌ You", "DshUserHeader")
@@ -164,19 +172,22 @@ function M.compose(entries)
       local call = entry.text ~= "" and ("%s(%s)"):format(entry.name or "tool", entry.text) or (entry.name or "tool")
       state.push("  ⚙ " .. call, "DshTool")
     elseif entry.role == "tool_result" then
+      -- Tool results are arbitrary text — file contents, shell output, JSON —
+      -- so they render like a Markdown code block: verbatim lines indented one
+      -- level under the call and grouped under DshCodeBlock. A failed result
+      -- keeps its error group so the failure stays visible.
       local body = lines_of(entry.text)
       local limit = config.options.tool_output_lines
-      local group = entry.is_error and "DshToolError" or "DshTool"
+      local group = entry.is_error and "DshToolError" or "DshCodeBlock"
+      local shown = math.min(#body, limit)
+      for index = 1, shown do
+        state.push(TOOL_CODE_INDENT .. body[index], group)
+      end
       if #body == 0 then
-        state.push("  ↳ (empty)", group)
-      else
-        for index, line in ipairs(body) do
-          if index > limit then
-            state.push(("  ↳ … %d more lines"):format(#body - limit), group)
-            break
-          end
-          state.push("  ↳ " .. line, group)
-        end
+        state.push(TOOL_CODE_INDENT .. "(empty)", "DshTool")
+      elseif #body > shown then
+        local hidden = #body - shown
+        state.push(TOOL_CODE_INDENT .. ("… %d more line%s"):format(hidden, hidden == 1 and "" or "s"), "DshTool")
       end
     elseif entry.role == "error" then
       blank()
@@ -277,11 +288,42 @@ local function literal(text)
   return (text:gsub("%%", "%%%%"):gsub("[\r\n]", " "))
 end
 
+--- Text of the newest assistant message in a view, collapsed to one line.
+---
+--- The in-progress message is the trailing `live` entry while a turn streams;
+--- after it settles, the same text becomes an `assistant` entry. Missing or
+--- blank messages are skipped so the winbar can fall back to the title.
+--- @param entries table[]|nil
+--- @return string|nil
+function M.last_assistant(entries)
+  for index = #(entries or {}), 1, -1 do
+    local item = entries[index]
+    if type(item) == "table" and (item.role == "live" or item.role == "assistant") then
+      local text = item.text
+      if type(text) == "string" then
+        text = text:gsub("^%s+", "")
+        if text ~= "" then
+          -- 400 characters is plenty for any winbar; bound before collapsing
+          -- whitespace so a long streamed message is not rescanned each tick.
+          local one_line = vim.fn.strcharpart(text, 0, 400):gsub("%s+", " ")
+          return (one_line:gsub("^%s+", ""):gsub("%s+$", ""))
+        end
+      end
+    end
+  end
+end
+
 --- Window bar describing the session.
 --- @param title string|nil
 --- @param status string|nil
-function M.winbar(title, status)
-  local name = (title and title ~= "") and title or "untitled"
+--- @param preview string|nil shown instead of the title while streaming
+function M.winbar(title, status, preview)
+  local name
+  if status == "streaming" and type(preview) == "string" and preview ~= "" then
+    name = preview
+  else
+    name = (title and title ~= "") and title or "untitled"
+  end
   if status and status ~= "" then
     return (" dsh · %s · %s "):format(literal(name), literal(status))
   end

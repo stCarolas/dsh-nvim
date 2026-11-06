@@ -39,4 +39,40 @@ function M.ensure(ctx, path)
   return workspace, nil, value.created == true
 end
 
+--- Archive one session: DSH's remove operation.
+---
+--- The session leaves Workspace and picker surfaces, and with `stop_activity`
+--- its running turn, subagents, jobs and schedules are stopped first. The
+--- transcript is kept; `workspace/unarchiveSession` (or the Web UI) restores
+--- it.
+--- @param ctx {url: string, cookie: string}
+--- @param session_id string
+--- @param stop_activity boolean|nil
+--- @return table|nil value
+--- @return string|nil error
+function M.archive_session(ctx, session_id, stop_activity)
+  local value, err = http.rpc(ctx, "workspace/archiveSession", {
+    request = { sessionId = session_id, stopActivity = stop_activity == true },
+  }, config.options.request_timeout)
+  if not value then
+    return nil, err
+  end
+  return value
+end
+
+--- Drop one session from the archive set (idempotent).
+--- @param ctx {url: string, cookie: string}
+--- @param session_id string
+--- @return table|nil value
+--- @return string|nil error
+function M.unarchive_session(ctx, session_id)
+  local value, err = http.rpc(ctx, "workspace/unarchiveSession", {
+    request = { sessionId = session_id },
+  }, config.options.request_timeout)
+  if not value then
+    return nil, err
+  end
+  return value
+end
+
 return M

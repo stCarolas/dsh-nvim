@@ -10,9 +10,15 @@ local server = require("dsh.server")
 function M.setup(opts)
   config.setup(opts)
   render.define_highlights()
+  if config.options.treesitter then
+    require("dsh.treesitter").setup()
+  end
 
   local global = config.options.keymaps.global or {}
   local actions = {
+    menu = function()
+      M.menu()
+    end,
     new_session = function()
       M.new_session()
     end,
@@ -53,6 +59,11 @@ function M.pick()
   require("dsh.ui.chat").pick()
 end
 
+--- Open the nested DSH menu: new session, open session, skills and commands.
+function M.menu()
+  require("dsh.ui.menu").open()
+end
+
 --- Send a prompt to the session of the current buffer.
 function M.prompt()
   require("dsh.ui.chat").prompt()
@@ -73,10 +84,62 @@ function M.close()
   require("dsh.ui.chat").close()
 end
 
---- Stop the `dsh web` process this plugin started.
+--- Ensure the DSH server is ready for later Neovim instances.
+---
+--- Intended for the shared/attached modes: a private server dies with this
+--- Neovim, so warming one up would help nobody and is refused. With `cli` the
+--- command exits with status 0 (ready) or 1 (failed), which is what
+--- `:DshWarmup!` does for startup scripts; without it the outcome is reported
+--- and control returns to the editor.
+--- @param cli boolean|nil exit with a status code instead of returning
+--- @return boolean ok
+--- @return string|nil error
+function M.warmup(cli)
+  local config = require("dsh.config").options
+  local server = require("dsh.server")
+
+  local function finish(ok, err)
+    if ok then
+      vim.notify("dsh: server ready at " .. tostring(server.describe().url), vim.log.levels.INFO, { title = "dsh.nvim" })
+    else
+      vim.notify("dsh: warmup failed: " .. tostring(err), vim.log.levels.ERROR, { title = "dsh.nvim" })
+    end
+    if cli then
+      vim.cmd(ok and "cquit 0" or "cquit 1")
+    end
+    return ok, err
+  end
+
+  if not (config.shared or config.url) then
+    return finish(false, "warmup needs shared = true or url = ...; a private server stops with this Neovim")
+  end
+
+  local done = false
+  local started, start_err
+  server.start(function(ok, err)
+    done, started, start_err = true, ok, err
+  end)
+  if not done then
+    vim.wait((config.startup_timeout or 120000) + 15000, function()
+      return done
+    end, 50)
+  end
+  if not done then
+    return finish(false, "timed out waiting for the DSH server")
+  end
+  return finish(started == true, start_err)
+end
+
+--- Delete (archive) the current session.
+--- @param skip_confirm boolean|nil skip the confirmation prompt
+function M.delete(skip_confirm)
+  require("dsh.ui.chat").delete(nil, { skip_confirm = skip_confirm })
+end
+
+--- Stop the DSH server this plugin started (a shared one included).
 function M.stop()
   require("dsh.ui.chat").shutdown()
-  server.stop()
+  server.stop({ force = true })
 end
 
 --- Connection facts, for statuslines and health checks.

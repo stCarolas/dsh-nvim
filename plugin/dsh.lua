@@ -20,6 +20,10 @@ vim.api.nvim_create_user_command("DshSessions", function()
   dsh().pick()
 end, { desc = "DSH: pick a session in this directory" })
 
+vim.api.nvim_create_user_command("DshMenu", function()
+  dsh().menu()
+end, { desc = "DSH: open the action menu (sessions, skills, commands)" })
+
 vim.api.nvim_create_user_command("DshPrompt", function()
   dsh().prompt()
 end, { desc = "DSH: send a prompt to the current session" })
@@ -36,9 +40,17 @@ vim.api.nvim_create_user_command("DshClose", function()
   dsh().close()
 end, { desc = "DSH: close the current session view" })
 
+vim.api.nvim_create_user_command("DshDelete", function(command)
+  dsh().delete(command.bang)
+end, { bang = true, desc = "DSH: delete (archive) the current session; ! skips confirmation" })
+
+vim.api.nvim_create_user_command("DshWarmup", function(command)
+  dsh().warmup(command.bang)
+end, { bang = true, desc = "DSH: ensure the server is ready (bang: exit 0/1 for scripts)" })
+
 vim.api.nvim_create_user_command("DshStop", function()
   dsh().stop()
-end, { desc = "DSH: stop the dsh web process started by this plugin" })
+end, { desc = "DSH: stop the DSH server (detach when attached)" })
 
 vim.api.nvim_create_user_command("DshStatus", function()
   local status = dsh().status()
@@ -60,6 +72,8 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
   group = group,
   callback = function()
     require("dsh.ui.chat").shutdown()
+    -- Without `force`, a shared or attached server keeps running for the
+    -- other Neovim instances; a private one is stopped as before.
     require("dsh.server").stop()
   end,
 })
