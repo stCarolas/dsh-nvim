@@ -1,0 +1,215 @@
+[
+  {
+    "type": "assistant_header",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "assistant_message_header",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "blank",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "bullet",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "code",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "code_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "code",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "document",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "assistant_header",
+          "named": true
+        },
+        {
+          "type": "assistant_message_header",
+          "named": true
+        },
+        {
+          "type": "blank",
+          "named": true
+        },
+        {
+          "type": "bullet",
+          "named": true
+        },
+        {
+          "type": "code_block",
+          "named": true
+        },
+        {
+          "type": "error",
+          "named": true
+        },
+        {
+          "type": "notice",
+          "named": true
+        },
+        {
+          "type": "ordered",
+          "named": true
+        },
+        {
+          "type": "quote",
+          "named": true
+        },
+        {
+          "type": "rule",
+          "named": true
+        },
+        {
+          "type": "task",
+          "named": true
+        },
+        {
+          "type": "text",
+          "named": true
+        },
+        {
+          "type": "title",
+          "named": true
+        },
+        {
+          "type": "tool_call",
+          "named": true
+        },
+        {
+          "type": "tool_exchange",
+          "named": true
+        },
+        {
+          "type": "user_header",
+          "named": true
+        },
+        {
+          "type": "user_prompt",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "error",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "notice",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "ordered",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "quote",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "rule",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "task",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "text",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "title",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "tool_call",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "tool_exchange",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "tool_call",
+          "named": true
+        },
+        {
+          "type": "tool_output_block",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "tool_output",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "tool_output_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "tool_output",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "user_header",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "user_prompt",
+    "named": true,
+    "fields": {}
+  }
+]

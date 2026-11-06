@@ -1,0 +1,7 @@
+{
+  "name": "tree-sitter-dshchat",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for rendered dshchat session buffers",
+  "keywords": ["tree-sitter", "dsh", "neovim"],
+  "license": "MIT"
+}
