@@ -22,6 +22,9 @@ function M.setup(opts)
     new_session = function()
       M.new_session()
     end,
+    next_chat = function()
+      M.next_chat()
+    end,
     pick = function()
       M.pick()
     end,
@@ -30,6 +33,9 @@ function M.setup(opts)
     end,
     prompt = function()
       M.prompt()
+    end,
+    interrupt = function()
+      M.interrupt()
     end,
   }
   for action, lhs in pairs(global) do
@@ -54,6 +60,16 @@ function M.new_session(opts)
   require("dsh.ui.chat").new_session(opts)
 end
 
+--- Switch to the next open session view, or start a new chat.
+---
+--- Views are ordered by buffer number (the order they were opened) and the
+--- next one is focused, wrapping around. From a buffer that is not a session
+--- view this starts a new session in this directory's workspace, opens it
+--- where `chat.open_in` says and opens its prompt.
+function M.next_chat()
+  require("dsh.ui.chat").next_chat()
+end
+
 --- Pick a session rooted at the current directory and open it.
 function M.pick()
   require("dsh.ui.chat").pick()
@@ -74,9 +90,18 @@ function M.refresh()
   require("dsh.ui.chat").refresh()
 end
 
---- Cancel the running turn in the current session.
+--- Cancel the running turn in the current (or most recently used) session.
 function M.cancel()
   require("dsh.ui.chat").cancel()
+end
+
+--- Interrupt the running turn of the session in view.
+---
+--- Same target resolution as `cancel` — the view under the cursor, then the
+--- most recently used open view — and the accepted request is reported, so
+--- `:DshInterrupt` from a prompt window or another tab names what it stopped.
+function M.interrupt()
+  require("dsh.ui.chat").interrupt()
 end
 
 --- Close the current session view.
@@ -142,12 +167,46 @@ function M.stop()
   server.stop({ force = true })
 end
 
---- Connection facts, for statuslines and health checks.
+--- Connection facts for statuslines, status plugins and health checks.
+---
+--- Safe to call on every redraw: it reads cached connection state and probes
+--- the recorded process id, but never starts a server, sends a request or
+--- opens a socket.
+---
+--- Fields:
+---   running       boolean        the plugin holds server credentials
+---   connected     boolean        credentials are usable: running, and the
+---                                server is not known to be dead
+---   server_live   boolean|nil    recorded server process is alive; nil when
+---                                it cannot be checked (attached mode)
+---   starting      boolean        a server boot/attach is in progress
+---   mode          string|nil     "own", "shared" or "attached"
+---   url           string|nil     server base URL
+---   pid           integer|nil    server process, when known
+---   websocket     boolean        multiplexed live-update socket is open
+---   stream        boolean        alias of `websocket` (compatibility)
+---   interactions  boolean        question/approval stream announced itself
+---   views         integer        open session views
+---   error         string|nil     last connection error
+--- @return table
 function M.status()
   local status = server.describe()
-  status.stream = require("dsh.mux").is_connected()
+  local alive = server.is_alive()
+  status.server_live = alive
+  status.websocket = require("dsh.mux").is_connected()
+  status.stream = status.websocket
   status.interactions = require("dsh.interactions").is_ready()
+  status.views = require("dsh.ui.chat").view_count()
+  status.connected = status.running and alive ~= false
   return status
+end
+
+--- Whether the plugin currently has a usable connection to a DSH server.
+---
+--- Shorthand for `require("dsh").status().connected`.
+--- @return boolean
+function M.connected()
+  return M.status().connected
 end
 
 render.define_highlights()

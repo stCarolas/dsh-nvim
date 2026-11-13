@@ -16,6 +16,10 @@ vim.api.nvim_create_user_command("DshNew", function(command)
   dsh().new_session({ prompt = command.bang })
 end, { bang = true, desc = "DSH: create a session in this directory's workspace (bang: prompt immediately)" })
 
+vim.api.nvim_create_user_command("DshNextChat", function()
+  dsh().next_chat()
+end, { desc = "DSH: next open session view; from elsewhere, new session + prompt" })
+
 vim.api.nvim_create_user_command("DshSessions", function()
   dsh().pick()
 end, { desc = "DSH: pick a session in this directory" })
@@ -36,6 +40,10 @@ vim.api.nvim_create_user_command("DshCancel", function()
   dsh().cancel()
 end, { desc = "DSH: cancel the running turn" })
 
+vim.api.nvim_create_user_command("DshInterrupt", function()
+  dsh().interrupt()
+end, { desc = "DSH: interrupt the running turn of the session in view" })
+
 vim.api.nvim_create_user_command("DshClose", function()
   dsh().close()
 end, { desc = "DSH: close the current session view" })
@@ -55,14 +63,30 @@ end, { desc = "DSH: stop the DSH server (detach when attached)" })
 vim.api.nvim_create_user_command("DshStatus", function()
   local status = dsh().status()
   if status.running then
-    vim.notify(("dsh: %s (pid %s); websocket %s; questions %s"):format(
+    local liveness
+    if status.server_live == false then
+      liveness = "server not responding"
+    elseif status.server_live == nil then
+      liveness = "server liveness unknown"
+    else
+      liveness = "server live"
+    end
+    local details = status.mode or "connected"
+    if status.pid then
+      details = details .. ", pid " .. tostring(status.pid)
+    end
+    vim.notify(("dsh: %s (%s; %s); websocket %s; questions %s; %d view%s"):format(
       tostring(status.url),
-      tostring(status.pid),
-      status.stream and "connected" or "disconnected",
-      status.interactions and "ready" or "unavailable"
+      details,
+      liveness,
+      status.websocket and "connected" or "disconnected",
+      status.interactions and "ready" or "unavailable",
+      status.views,
+      status.views == 1 and "" or "s"
     ))
   else
-    vim.notify("dsh: not connected" .. (status.error and (": " .. status.error) or ""))
+    local reason = status.starting and "starting" or status.error
+    vim.notify("dsh: not connected" .. (reason and (": " .. reason) or ""))
   end
 end, { desc = "DSH: show connection status" })
 

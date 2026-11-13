@@ -178,17 +178,60 @@ end
 --------------------------------------------------------------------------------
 -- 1. The stream opens once per socket generation.
 --------------------------------------------------------------------------------
-interactions.start(ctx)
+local open_sessions = { ["session-1"] = true }
+local function session_filter(session_id)
+  return open_sessions[session_id] == true
+end
+
+interactions.start(ctx, { is_session_open = session_filter })
 check("event stream endpoint is $events", stream_endpoint == "$events", tostring(stream_endpoint))
 check("event stream args are empty", type(stream_args) == "table" and next(stream_args) == nil, vim.inspect(stream_args))
 check("event stream opened once", stream_count == 1, tostring(stream_count))
 
-interactions.start(ctx)
+interactions.start(ctx, { is_session_open = session_filter })
 check("start is idempotent within a socket", stream_count == 1, tostring(stream_count))
 check("not ready before the ready frame", interactions.is_ready() == false)
 
 ready()
 check("ready frame makes questions available", interactions.is_ready() == true)
+
+--------------------------------------------------------------------------------
+-- 1b. A shared server forwards every interaction to every connected client.
+-- Only the instance that shows the owning session may prompt; other instances
+-- hold it until that session is opened there.
+--------------------------------------------------------------------------------
+reset_ui()
+open_sessions["session-1"] = nil
+question("event-foreign", { { id = "foreign", question = "Foreign?", options = { { label = "a" } } } })
+check("foreign session does not prompt", #selects == 0, tostring(#selects))
+check("foreign session sends nothing", #rpc_calls == 0, tostring(#rpc_calls))
+
+open_sessions["session-1"] = true
+select_scripts = { pick("a") }
+interactions.start(ctx, { is_session_open = session_filter })
+check("opening the session surfaces its deferred question", #selects == 1, tostring(#selects))
+check("deferred question answers normally", #rpc_calls == 1 and rpc_calls[1].args.eventId == "event-foreign", vim.inspect(rpc_calls[1] and rpc_calls[1].args))
+check("deferred question answer is the chosen option", rpc_calls[1] and rpc_calls[1].args.outcome.value.answers[1].selected[1] == "a")
+
+reset_ui()
+open_sessions["session-1"] = nil
+approval("event-foreign-approval", { toolName = "bash" })
+check("foreign approval does not prompt", #selects == 0 and #rpc_calls == 0)
+open_sessions["session-1"] = true
+select_scripts = { "Allow once" }
+interactions.start(ctx, { is_session_open = session_filter })
+check("opening the session surfaces its deferred approval", #selects == 1, tostring(#selects))
+check("deferred approval answers with allow-once", rpc_calls[1] and rpc_calls[1].args.outcome.value == "allowed-once", vim.inspect(rpc_calls[1] and rpc_calls[1].args))
+
+reset_ui()
+open_sessions["session-1"] = nil
+question("event-foreign-cancel", { { id = "gone", question = "Gone?", options = { { label = "a" } } } })
+feed({ type = "cancel", eventId = "event-foreign-cancel" })
+open_sessions["session-1"] = true
+interactions.start(ctx, { is_session_open = session_filter })
+check("cancelled deferred question stays silent", #selects == 0 and #rpc_calls == 0, ("selects=%d rpc=%d"):format(#selects, #rpc_calls))
+
+open_sessions["session-1"] = true
 
 --------------------------------------------------------------------------------
 -- 2. Single-select question: option label becomes `selected`.

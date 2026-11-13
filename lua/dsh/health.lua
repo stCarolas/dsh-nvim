@@ -33,6 +33,9 @@ function M.check()
   end
 
   local describe = require("dsh.server").describe()
+  if describe.starting then
+    vim.health.info("server startup in progress")
+  end
   if describe.running then
     local mode = describe.mode and (" [" .. describe.mode .. "]") or ""
     vim.health.ok("connected to " .. tostring(describe.url) .. " (pid " .. tostring(describe.pid) .. ")" .. mode)

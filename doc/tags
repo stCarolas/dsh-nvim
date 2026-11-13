@@ -6,6 +6,7 @@ dsh-markdown	dsh.txt	/*dsh-markdown*
 dsh-menu	dsh.txt	/*dsh-menu*
 dsh-questions	dsh.txt	/*dsh-questions*
 dsh-shared	dsh.txt	/*dsh-shared*
+dsh-status-api	dsh.txt	/*dsh-status-api*
 dsh-treesitter	dsh.txt	/*dsh-treesitter*
 dsh-troubleshoot	dsh.txt	/*dsh-troubleshoot*
 dsh.nvim	dsh.txt	/*dsh.nvim*

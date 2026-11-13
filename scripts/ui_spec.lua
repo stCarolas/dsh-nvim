@@ -93,6 +93,8 @@ local ls_after_open = vim.api.nvim_exec2("ls", { output = true }).output
 check("session buffer is absent from :ls", ls_after_open:find("dsh://", 1, true) == nil, ls_after_open)
 check("no throwaway buffer", opened.bufs == before.bufs + 1, ("%d -> %d"):format(before.bufs, opened.bufs))
 check("session tab is current", vim.api.nvim_get_current_tabpage() ~= origin_tab)
+check("open view reports its session open", chat.is_open(sid))
+check("is_open rejects sessions without a view", not chat.is_open("session-ffffffff-0000-0000-0000-000000000000"))
 
 -- 2. Re-open focuses the existing tab instead of making another.
 vim.api.nvim_set_current_tabpage(origin_tab)
@@ -108,6 +110,7 @@ local closed = counts()
 check("close removes the session tab", closed.tabs == before.tabs, ("%d vs %d"):format(closed.tabs, before.tabs))
 check("close removes the buffer", closed.bufs == before.bufs, ("%d vs %d"):format(closed.bufs, before.bufs))
 check("close leaves one window", closed.wins == before.wins, ("%d vs %d"):format(closed.wins, before.wins))
+check("closed view is no longer open", not chat.is_open(sid))
 
 -- 4. Split placement still works and creates no tab.
 config.setup({ notifications = false, chat = { open_in = "split", split = "vertical" } })

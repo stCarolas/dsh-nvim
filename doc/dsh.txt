@@ -27,7 +27,7 @@ the cwd.
 
 Session views and prompt buffers are unlisted ('buflisted' is off): they never
 appear in |:ls|, |:bnext| / |:bprevious|, or bufferline-style lists. Use
-|:Dsh|, |:DshSessions| or |:DshMenu| to switch sessions.
+|:Dsh|, |:DshSessions|, |:DshNextChat| or |:DshMenu| to switch sessions.
 
 ==============================================================================
 COMMANDS                                                        *dsh-commands*
@@ -36,12 +36,20 @@ COMMANDS                                                        *dsh-commands*
                         directory.
 :DshNew                 Create a session in this directory's workspace.
 :DshNew!                Create a session, then open the prompt.
+:DshNextChat            Switch to the next open session view; from a buffer
+                        that is not a session view, create a session and
+                        open its prompt.
 :DshSessions            Pick a session rooted at the current directory.
 :DshMenu                Nested menu: new session, open session, skills,
                         commands.
 :DshPrompt              Open the prompt for the current session.
 :DshRefresh             Re-open the stream and re-read history.
-:DshCancel              Cancel the running turn.
+:DshCancel              Cancel the running turn; like |:DshInterrupt| but quiet.
+:DshInterrupt           Interrupt the running turn of the session in view.
+                        Works from a prompt window, a code buffer or another
+                        tab: the session view under the cursor wins, then the
+                        most recently used open view. The accepted request is
+                        reported with the session title when known.
 :DshClose               Close the session view.
 :DshDelete              Delete (archive) the current session.
 :DshDelete!             Same, without the confirmation prompt.
@@ -50,6 +58,13 @@ COMMANDS                                                        *dsh-commands*
                         startup scripts).
 :DshStop                Stop the DSH server (shared or private).
 :DshStatus              Show server, WebSocket and question status.
+
+|:DshNextChat| cycles the open session views in buffer-number order (the
+order they were opened), wrapping from the last back to the first. A view
+whose window was closed or reused for another buffer is shown again where
+`chat.open_in` says. From a buffer that is not a session view it creates a
+session in this directory's workspace, opens it where `chat.open_in` says,
+and opens its prompt (the |:DshNew!| path).
 
 ==============================================================================
 SHARED SERVER                                                   *dsh-shared*
@@ -117,6 +132,38 @@ the cursor is placed on the newest line, so streamed output keeps scrolling
 into view.
 
 Global keymaps can be configured with `keymaps.global`; see |dsh-config|.
+`keymaps.global.interrupt` maps |:DshInterrupt|, so a running turn can be
+stopped from a prompt window or any other buffer. `keymaps.global.next_chat`
+maps |:DshNextChat|.
+
+==============================================================================
+STATUS API                                                    *dsh-status-api*
+
+For statusline plugins, `require("dsh").status()` returns one table of
+connection facts: >lua
+    local status = require("dsh").status()
+<
+It reads cached state and probes the recorded process id only; it never
+starts the server, sends a request or opens a socket, so it is safe to call
+on every redraw.
+
+    running         boolean       the plugin holds server credentials
+    connected       boolean       those credentials are usable (the server
+                                  is not known to be dead)
+    server_live     boolean|nil   recorded server process is alive; nil when
+                                  it cannot be checked (attached mode)
+    starting        boolean       a server boot or attach is in progress
+    mode            string|nil    "own", "shared" or "attached"
+    url             string|nil    server base URL
+    pid             integer|nil   server process, when known
+    websocket       boolean       multiplexed live-update socket is open
+    stream          boolean       alias of `websocket` (compatibility)
+    interactions    boolean       question/approval stream is ready
+    views           integer       open session views
+    error           string|nil    last connection error
+
+`require("dsh").connected()` is the boolean shorthand for
+`status().connected`.
 
 ==============================================================================
 MENU                                                                *dsh-menu*
@@ -170,6 +217,12 @@ forwards to connected clients. Both kinds use |vim.ui.select()| and
 Tool approvals ~
     "Allow once" / "Reject". <Esc> rejects, failing closed, the same choice
     the DSH Web approval panel makes.
+
+A shared DSH server forwards every interaction to every connected client. The
+plugin only prompts in the Neovim instance that shows the interaction's
+session; other instances leave it to that one. An interaction that arrives
+before its session is opened here is held and surfaces when the view opens, so
+opening the blocked session still lets you answer it.
 
 The prompts ride the same multiplexed WebSocket as the live session. They
 become available with the first session view and stop with the last one. A
@@ -236,7 +289,9 @@ All keys are optional; defaults shown. >lua
       keymaps = {
         prompt = "<CR>", refresh = "R", cancel = "<C-c>",
         sessions = "<localleader>s", close = "q",
-        global = {},            -- e.g. { new_session = "<leader>dn" }
+        global = {},            -- e.g. { new_session = "<leader>dn",
+                                --        next_chat = "<leader>dx",
+                                --        interrupt = "<leader>di" }
       },
       notifications = true,
     })
@@ -408,6 +463,11 @@ answers with a unary call: >
      "payload":{"args":{"clientId":"…","eventId":"…",
                         "outcome":{"kind":"result","value":{…}}}}}
 <
+Each forwarded frame names its Agent, and an Agent id is the Session id
+(`agentId`). A shared server therefore delivers an interaction to every
+Neovim instance, and the plugin prompts only in the one that shows that
+session; other instances hold it until the session is opened there.
+
 DSH only accepts the answer from the peer that owns the event stream, so this
 call uses the socket's cookie, not the long-lived HTTP one. Answers decided
 while the socket is down are held and flushed after the next `ready` frame.
@@ -437,10 +497,14 @@ Run |:checkhealth| `dsh` first.
   server. `:DshStop` then reopening re-mints both.
 - "live updates stopped": reconnect attempts were exhausted. `R` in the chat
   buffer retries; `:DshStatus` shows whether the socket is connected.
-- A question or approval never appeared: no session view is open, the socket
-  is disconnected, or `interactions.enabled` (or the specific
+- A question or approval never appeared: its session has no open view in this
+  Neovim instance (open it and a held interaction surfaces), the socket is
+  disconnected, or `interactions.enabled` (or the specific
   `interactions.questions` / `interactions.approvals`) is false. `:DshStatus`
   reports the question stream; `:checkhealth dsh` shows the same.
+- The same approval appeared in several Neovim instances: they all show that
+  session. DSH broadcasts each interaction to every connected client, so the
+  first answer wins; keep one view per session across instances.
 - "timed out waiting for dsh web to start": the first launch may need to
   install the `web` profile. Run `dsh web` once in a terminal, or raise
   `startup_timeout`.

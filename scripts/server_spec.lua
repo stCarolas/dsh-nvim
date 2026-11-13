@@ -126,6 +126,8 @@ check(
   vim.inspect(connect_calls[1])
 )
 check("attached mode reported", server.describe().attached == true and server.describe().running == true)
+check("attached mode has unknown liveness", server.is_alive() == nil, tostring(server.is_alive()))
+check("idle server is not starting", server.describe().starting == false and server.is_starting() == false)
 server.stop()
 check("stopping an attached server only disconnects", server.is_running() == false)
 
@@ -171,6 +173,7 @@ check(
   described.shared == true and described.mode == "shared" and described.registry == adopt_dir .. "/server.json",
   vim.inspect(described)
 )
+check("adopted shared server is live", server.is_alive() == true, tostring(server.is_alive()))
 
 -- 3b. `:DshWarmup` (non-CLI) reports readiness for the adopted server.
 local warmup_notices = {}
@@ -214,6 +217,7 @@ check("rediscovery mints a new peer", #connect_calls == before_reconnect + 1, to
 server.stop()
 check("non-force stop leaves the shared server", read_registry(adopt_dir) ~= nil)
 check("non-force stop disconnects locally", server.is_running() == false)
+check("a disconnected plugin reports no live server", server.is_alive() == false, tostring(server.is_alive()))
 
 --------------------------------------------------------------------------------
 -- 4. A live registry entry that refuses auth must not spawn a duplicate.

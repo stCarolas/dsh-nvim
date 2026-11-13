@@ -25,6 +25,12 @@
 ---
 --- Prompts are serialized: DSH may forward several requests while one is
 --- already on screen, and the user should answer them one at a time in order.
+---
+--- A shared DSH server forwards each interaction to every connected client.
+--- `start` therefore accepts an `is_session_open` predicate; an interaction is
+--- prompted only in the Neovim instance that shows the Agent's session (the
+--- forwarded `agentId` is that Session id). Other instances hold it until the
+--- session is opened there, so they do not race for the same approval.
 local M = {}
 
 local config = require("dsh.config")
@@ -38,7 +44,10 @@ local state = {
   queue = {},
   inflight = {},
   cancelled = {},
+  deferred = {},
+  defer_seq = 0,
   outbox = {},
+  is_session_open = nil,
   active = false,
   active_event = nil,
   active_frame = nil,
@@ -535,6 +544,66 @@ local function enqueue(kind, frame)
   pump()
 end
 
+--- Whether the session that asked for this interaction is open here.
+---
+--- Without a predicate (a bare `start`) every interaction is eligible. A
+--- predicate failure errs on the side of asking: a lost prompt stalls an agent,
+--- while a duplicate prompt is only a nuisance.
+--- @param session_id string|nil
+--- @return boolean
+local function session_is_open(session_id)
+  if not state.is_session_open then
+    return true
+  end
+  if type(session_id) ~= "string" or session_id == "" then
+    return true
+  end
+  local ok, open = pcall(state.is_session_open, session_id)
+  return not ok or open == true
+end
+
+--- Hold an interaction until its session is opened in this Neovim instance.
+--- @param kind "question"|"approval"
+--- @param frame table
+local function defer(kind, frame)
+  local event_id = frame.eventId
+  if type(event_id) ~= "string" or event_id == "" then
+    return
+  end
+  state.defer_seq = state.defer_seq + 1
+  state.deferred[event_id] = {
+    kind = kind,
+    frame = frame,
+    seq = state.defer_seq,
+  }
+end
+
+--- Prompt deferred interactions whose sessions are now open.
+---
+--- A shared server delivers each interaction to every client, so an instance
+--- can receive one for a session it does not show. Keeping it means opening
+--- that session later (from `:DshSessions`, for example) still surfaces the
+--- waiting decision instead of leaving the agent blocked elsewhere.
+local function flush_deferred()
+  if next(state.deferred) == nil then
+    return
+  end
+
+  local ready = {}
+  for event_id, item in pairs(state.deferred) do
+    if session_is_open(item.frame.agentId) then
+      state.deferred[event_id] = nil
+      ready[#ready + 1] = item
+    end
+  end
+  table.sort(ready, function(left, right)
+    return left.seq < right.seq
+  end)
+  for _, item in ipairs(ready) do
+    enqueue(item.kind, item.frame)
+  end
+end
+
 --- Handle one item of the `$events` stream.
 --- @param value table
 local function handle_item(value)
@@ -550,6 +619,11 @@ local function handle_item(value)
 
   if value.type == "cancel" then
     local event_id = value.eventId
+    if state.deferred[event_id] then
+      -- The interaction never reached a prompt here; drop the held copy.
+      state.deferred[event_id] = nil
+      return
+    end
     local active = state.active_event == event_id
     local queued = false
     for index, item in ipairs(state.queue) do
@@ -585,14 +659,27 @@ local function handle_item(value)
   end
 
   local options = config.options.interactions
+  local kind
   if value.event == "user-questions/request" and options.questions then
-    enqueue("question", value)
+    kind = "question"
   elseif value.event == "approval/request" and options.approvals then
-    enqueue("approval", value)
-  else
+    kind = "approval"
+  end
+
+  if not kind then
     -- Unknown or disabled: hand the request back to DSH unchanged.
     send_result(value.eventId, { kind = "next" })
+    return
   end
+
+  -- The forwarded frame names the Agent, whose identity is its Session id.
+  -- Do not prompt for a session this Neovim instance does not show; another
+  -- instance (or the Web UI) that does can answer it.
+  if not session_is_open(value.agentId) then
+    defer(kind, value)
+    return
+  end
+  enqueue(kind, value)
 end
 
 --- Open the single forwarded-event stream on the current socket.
@@ -624,9 +711,16 @@ end
 ---
 --- Safe to call whenever a session view attaches: within one socket generation
 --- the stream opens once, and after that socket drops the next call reopens it.
+--- `opts.is_session_open` is the filter that decides whether an interaction
+--- belongs to a session this Neovim instance shows; deferred interactions for
+--- the newly opened session are prompted before returning.
 --- @param ctx {url: string, cookie: string}
-function M.start(ctx)
+--- @param opts {is_session_open: fun(session_id: string): boolean|nil}|nil
+function M.start(ctx, opts)
   state.ctx = ctx
+  if type(opts) == "table" and type(opts.is_session_open) == "function" then
+    state.is_session_open = opts.is_session_open
+  end
   if not config.options.interactions.enabled then
     return
   end
@@ -636,6 +730,11 @@ function M.start(ctx)
     state.stream_id = nil
     state.client_id = nil
   end
+
+  -- The session view registering this call may have been the one a held
+  -- interaction was waiting for.
+  flush_deferred()
+
   if state.stream_id then
     return
   end
@@ -669,7 +768,10 @@ function M.stop()
   state.queue = {}
   state.inflight = {}
   state.cancelled = {}
+  state.deferred = {}
+  state.defer_seq = 0
   state.outbox = {}
+  state.is_session_open = nil
   state.active = false
   state.active_event = nil
   state.active_frame = nil

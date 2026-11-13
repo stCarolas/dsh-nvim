@@ -48,10 +48,17 @@ function M.is_running()
   return state.url ~= nil and state.cookie ~= nil
 end
 
+--- Whether a boot or attach attempt is in progress.
+--- @return boolean
+function M.is_starting()
+  return state.starting == true
+end
+
 --- Current connection facts, for `:checkhealth` and status messages.
 function M.describe()
   return {
     running = M.is_running(),
+    starting = state.starting == true,
     url = state.url,
     pid = state.pid or (state.proc and state.proc.pid) or nil,
     mode = state.mode,
@@ -348,6 +355,30 @@ end
 local function process_alive(pid)
   if type(pid) ~= "number" or pid <= 0 then
     return false
+  end
+  local ok, result = pcall(vim.uv.kill, pid, 0)
+  return ok and result == 0
+end
+
+--- Cheap liveness check for the server this instance knows about.
+---
+--- Own and shared modes record the server pid, so a signal-0 probe answers
+--- without a request or a socket. In attached mode the process belongs to
+--- someone else and is not known here, so liveness is `nil` (unknown); use
+--- the WebSocket or a request as the liveness signal then. `false` when no
+--- server is connected at all.
+--- @return boolean|nil
+function M.is_alive()
+  if not M.is_running() then
+    return false
+  end
+  local pid = state.pid or (state.proc and state.proc.pid) or nil
+  if type(pid) ~= "number" or pid <= 0 then
+    return nil
+  end
+  if vim.fn.has("win32") == 1 then
+    -- uv_kill does not accept signal 0 on Windows; the socket is the signal.
+    return nil
   end
   local ok, result = pcall(vim.uv.kill, pid, 0)
   return ok and result == 0

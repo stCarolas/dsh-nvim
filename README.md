@@ -111,17 +111,54 @@ Or manually, then `:helptags doc` and `:help dsh`.
 | `:Dsh` | open the current session, or pick one in this directory |
 | `:DshNew` | create a session in this directory's workspace and open it |
 | `:DshNew!` | same, then open the prompt |
+| `:DshNextChat` | switch to the next open session view; from a non-chat buffer, new session + prompt |
 | `:DshSessions` | pick a session rooted at the current directory |
 | `:DshMenu` | nested menu: new session, open session, skills, commands |
 | `:DshPrompt` | prompt for the current session |
 | `:DshRefresh` | re-open the stream and re-read history |
-| `:DshCancel` | cancel the running turn |
+| `:DshCancel` | cancel the running turn (quiet form of `:DshInterrupt`) |
+| `:DshInterrupt` | interrupt the running turn of the session in view, from any buffer |
 | `:DshClose` | close the session view |
 | `:DshDelete` | delete (archive) the current session; `:DshDelete!` skips the confirmation |
 | `:DshWarmup` | boot/attach the server and wait; `:DshWarmup!` exits 0 when ready, 1 on failure |
 | `:DshStop` | stop the DSH server (shared included), or detach from an attached one |
 | `:DshStatus` | server, WebSocket and question status |
 | `:checkhealth dsh` | diagnostics |
+
+`:DshInterrupt` finds the session to stop even when its buffer is not the current buffer: the
+session view under the cursor wins, then the most recently used open view. That makes it usable
+from a prompt window, a code buffer, or another tab, and it reports the accepted request (with
+the session title when known) so the target is unambiguous. `<C-c>` inside a session view does
+the same without the notice.
+
+`:DshNextChat` cycles the open session views in buffer-number order (the order they were
+opened), wrapping from the last back to the first. A view whose window was closed or reused for
+another buffer is shown again where `chat.open_in` says. From a buffer that is not a session
+view there is nothing to cycle from, so it creates a new session in this directory's workspace,
+opens it where `chat.open_in` says, and opens its prompt — the `:DshNew!` path.
+
+## Status API
+
+`require("dsh").status()` returns the connection facts a statusline or status plugin needs. It
+only reads cached state and probes the recorded process id; it never starts the server, sends a
+request or opens a socket, so it is safe to call on every redraw.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `running` | boolean | the plugin holds server credentials |
+| `connected` | boolean | those credentials are usable (the server is not known to be dead) |
+| `server_live` | boolean\|nil | recorded server process is alive; `nil` when it cannot be checked (attached mode) |
+| `starting` | boolean | a server boot or attach is in progress |
+| `mode` | string\|nil | `"own"`, `"shared"` or `"attached"` |
+| `url` | string\|nil | server base URL |
+| `pid` | integer\|nil | server process, when known |
+| `websocket` | boolean | the multiplexed live-update socket is open |
+| `stream` | boolean | alias of `websocket`, kept for existing callers |
+| `interactions` | boolean | the question/approval stream has announced itself |
+| `views` | integer | open session views |
+| `error` | string\|nil | last connection error |
+
+`require("dsh").connected()` is the boolean shorthand for `status().connected`.
 
 ## Menu
 
@@ -170,7 +207,8 @@ session id appended (`dsh://Fix the flaky retry test (1a2b3c4d)`). The `dsh://` 
 Neovim from treating the title as a file path relative to the cwd.
 
 Session views and prompt buffers are **unlisted**: they never appear in `:ls`, `:bnext` /
-`:bp`, or bufferline-style lists. You switch sessions with `:Dsh`, `:DshSessions` and the menu.
+`:bp`, or bufferline-style lists. You switch sessions with `:Dsh`, `:DshSessions`,
+`:DshNextChat` and the menu.
 
 ## Questions and approvals
 
@@ -189,6 +227,13 @@ Both use `vim.ui.select` and `vim.ui.input`, so telescope, fzf-lua, snacks.nvim,
 dressing.nvim or any other `vim.ui` provider applies unchanged. A question's long detail (a
 plan under review, for example) is put in a notification, because a picker prompt is one
 line.
+
+When several Neovim instances share one DSH server (`shared = true` or an explicit `url`),
+every connected client receives every interaction. The plugin only prompts in the Neovim
+instance that shows the interaction's session; other instances leave it alone. If the
+interaction arrives before its session is opened here, it is held and surfaces when that view
+opens, so opening the blocked session still lets you answer it. This keeps approvals and
+questions from popping up in every Neovim instance attached to the same server.
 
 The prompts ride the same WebSocket as the live session: they become available with the
 first session view and stop with the last one. A question asked while no view is open is
@@ -387,6 +432,11 @@ POST /api/$events/result
                     "outcome":{"kind":"result","value":{…}}}}}
 ```
 
+Every forwarded event names its Agent, and an Agent id **is** its Session id (`agentId`).
+Because a shared server forwards each event to every connected client, the plugin only
+prompts when that session is open as a view in this Neovim instance; other instances hold
+the event until the session is opened there.
+
 DSH matches that result to the peer that owns the event stream, so the plugin sends the
 socket's own cookie (`mux.credential()`), never the long-lived HTTP one. An answer decided
 while the socket is down is held and flushed when the next `$events` generation announces
@@ -416,6 +466,9 @@ the renderer and stay literal.
   treesitter parser being installed.
 - Approvals offer allow-once and reject only; permission presets and approval policies are not
   editable from Neovim. Attachments, model selection and queue editing are not exposed yet.
+- A shared server broadcasts each interaction to every connected client. Session filtering keeps
+  unrelated instances quiet, but if the same session is open in several Neovim instances, each
+  of them prompts and the first answer wins.
 - A question's choices are rendered as plain picker rows, so option lists are text, not the Web
   card's Markdown preview. Plan-review detail appears in a notification.
 - The cookie is bound to the process that minted it, which is why the plugin owns its server.
@@ -426,9 +479,12 @@ the renderer and stay literal.
 nvim --headless -l scripts/spec.lua               # rendering/UI specs, no server needed
 nvim --headless -l scripts/scope_spec.lua         # cwd workspace scoping, with stubbed transports
 nvim --headless -l scripts/ui_spec.lua            # tab vs split placement, with stubbed transports
+nvim --headless -l scripts/next_chat_spec.lua     # :DshNextChat cycling and the new-chat fallback
+nvim --headless -l scripts/status_spec.lua        # status() fields and :DshStatus output
 nvim --headless -l scripts/interactions_spec.lua  # questions/approvals via scripted vim.ui
 nvim --headless -l scripts/menu_spec.lua          # nested vim.ui menu, skills and commands
 nvim --headless -l scripts/delete_spec.lua        # session deletion (archive), with stubbed transports
+nvim --headless -l scripts/interrupt_spec.lua     # :DshInterrupt resolution and RPC, with stubbed transports
 nvim --headless -l scripts/server_spec.lua        # attach/shared server discovery, with stubbed transports
 nvim --headless -l scripts/treesitter_spec.lua    # dshchat grammar, queries and wiring
 nvim --headless -l scripts/ws_spec.lua            # WebSocket transport: handshake, streams, heartbeat

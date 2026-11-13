@@ -127,7 +127,9 @@ M.defaults = {
     sessions = "<localleader>s",
     close = "q",
 
-    --- Optional global mappings, e.g. { new_session = "<leader>dn", pick = "<leader>ds" }.
+    --- Optional global mappings, e.g.
+    --- { new_session = "<leader>dn", pick = "<leader>ds",
+    ---   next_chat = "<leader>dx", interrupt = "<leader>di" }.
     global = {},
   },
 

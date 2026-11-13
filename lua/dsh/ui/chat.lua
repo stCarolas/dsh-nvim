@@ -238,7 +238,11 @@ function attach(session_id)
     -- Forwarded questions and approvals ride the same multiplexed socket. They
     -- open independently of `stream.enabled`, so a history-only view can still
     -- answer a blocking `ask_user_question` call.
-    interactions.start(ctx)
+    --
+    -- A shared DSH server forwards each interaction to every connected client.
+    -- Only a Neovim instance that shows the owning session may present it, or
+    -- every instance would race for the same approval.
+    interactions.start(ctx, { is_session_open = M.is_open })
     -- Keep the archived-session set fresh for pickers.
     archive.begin(ctx)
 
@@ -365,6 +369,10 @@ local function location()
 end
 
 --- Focus an existing view, switching tab pages when needed.
+---
+--- The remembered window may have been reused for another buffer since the
+--- view was last shown (the user opened a file in it). In that case the view
+--- is put back into its window instead of merely focusing the foreign buffer.
 --- @param entry table
 --- @return boolean focused
 local function focus(entry)
@@ -377,6 +385,9 @@ local function focus(entry)
     vim.api.nvim_set_current_tabpage(tabpage)
   end
   vim.api.nvim_set_current_win(win)
+  if vim.api.nvim_win_get_buf(win) ~= entry.buf then
+    vim.api.nvim_win_set_buf(win, entry.buf)
+  end
   return true
 end
 
@@ -636,24 +647,60 @@ function M.refresh(session_id)
   attach(session_id)
 end
 
---- Cancel the running turn.
---- @param session_id string|nil defaults to the session of the current buffer
-function M.cancel(session_id)
-  session_id = session_id or M.current()
-  if not session_id then
-    return
-  end
+--- Ask DSH to stop one session's running turn.
+--- @param session_id string
+--- @param opts {announce: boolean|nil}|nil report the accepted request
+local function request_cancel(session_id, opts)
   server.context(function(err, ctx)
     if err then
       notify(err, vim.log.levels.ERROR)
       return
     end
-    local value, cancel_err = session.cancel(ctx, session_id)
+    local value, cancel_err, code = session.cancel(ctx, session_id)
     if not value then
-      notify(cancel_err or "cannot cancel", vim.log.levels.WARN)
+      -- DSH only admits a cancel to a live Agent, and an idle session is
+      -- usually no longer attached. That is a no-op, not a failure.
+      if code == "session/not-found" then
+        notify("session is not running", vim.log.levels.INFO)
+      else
+        notify(cancel_err or "cannot interrupt the running turn", vim.log.levels.WARN)
+      end
       return
     end
+    if opts and opts.announce then
+      local entry = state.sessions[session_id]
+      local title = entry and title_name(entry.title)
+      notify(title and ("interrupt requested: " .. title) or "interrupt requested", vim.log.levels.INFO)
+    end
   end)
+end
+
+--- Cancel the running turn.
+--- @param session_id string|nil defaults to the current or most recent view
+function M.cancel(session_id)
+  session_id = session_id or M.current() or M.recent_view()
+  if not session_id then
+    return
+  end
+  request_cancel(session_id)
+end
+
+--- Interrupt the running turn of the session in view.
+---
+--- `:DshInterrupt` resolves a session even when its buffer is not the current
+--- buffer: from a prompt window, a code buffer, or another tab, the view under
+--- the cursor wins and the most recently used open view comes next. That is
+--- exactly where an interrupt is useful — watching a turn while typing the
+--- next prompt. The accepted request is reported because the target may be a
+--- view that is not on screen.
+--- @param session_id string|nil defaults to the current or most recent view
+function M.interrupt(session_id)
+  session_id = session_id or M.current() or M.recent_view()
+  if not session_id then
+    notify("no open DSH session to interrupt; open one with :Dsh", vim.log.levels.WARN)
+    return
+  end
+  request_cancel(session_id, { announce = true })
 end
 
 --- Close a view's window, or its tab when the view owns that tab.
@@ -772,6 +819,22 @@ function M.current()
   return nil
 end
 
+--- Whether a session view is open in this Neovim instance.
+---
+--- Forwarded interactions (approvals, `ask_user_question`) belong to one
+--- session. A shared DSH server delivers each of them to every connected
+--- client, but only the instance showing that session should ask the user.
+--- `interactions` uses this predicate before prompting.
+--- @param session_id string
+--- @return boolean
+function M.is_open(session_id)
+  local entry = state.sessions[session_id]
+  return entry ~= nil
+    and not entry.closed
+    and entry.buf ~= nil
+    and vim.api.nvim_buf_is_valid(entry.buf)
+end
+
 --- Session id of the most recently used view that is still open.
 ---
 --- `:DshMenu` can run from a buffer that is not a session view (another tab,
@@ -790,6 +853,69 @@ function M.recent_view()
     end
   end
   return best_id
+end
+
+--- Open session views, ordered by buffer number.
+---
+--- Buffer numbers are assigned when a view is first opened, so the order is
+--- "the order the sessions were opened" and stays stable while they are open.
+--- A view the user left for another buffer still counts: opening it restores
+--- the session buffer in its window.
+--- @return table[] list of `{session_id, buf, entry}`
+local function ordered_views()
+  local views = {}
+  for session_id, entry in pairs(state.sessions) do
+    local buf = entry.buf
+    if not entry.closed and buf and vim.api.nvim_buf_is_valid(buf) then
+      views[#views + 1] = { session_id = session_id, buf = buf, entry = entry }
+    end
+  end
+  table.sort(views, function(a, b)
+    return a.buf < b.buf
+  end)
+  return views
+end
+
+--- Number of open session views.
+--- @return integer
+function M.view_count()
+  local count = 0
+  for _, entry in pairs(state.sessions) do
+    if not entry.closed and entry.buf and vim.api.nvim_buf_is_valid(entry.buf) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+--- Switch to the next open session view, or start a new chat.
+---
+--- Views are ordered by buffer number (the order they were opened) and the
+--- next one is focused, wrapping around from the last view to the first. A
+--- view whose window was closed, or reused for another buffer, is shown again
+--- where `chat.open_in` says (or restored in its own window).
+---
+--- From a buffer that is not a session view there is no position to cycle
+--- from, so this starts a new session in this directory's workspace, opens it
+--- where `chat.open_in` says and opens its prompt (the `:DshNew!` path).
+function M.next_chat()
+  local views = ordered_views()
+  local current = vim.api.nvim_get_current_buf()
+  local index
+  for i, view in ipairs(views) do
+    if view.buf == current then
+      index = i
+      break
+    end
+  end
+
+  if not index then
+    M.new_session({ prompt = true })
+    return
+  end
+
+  local next_view = views[(index % #views) + 1]
+  M.open(next_view.session_id, { title = next_view.entry.title })
 end
 
 --- Detach every view and close the socket; used when Neovim exits.
