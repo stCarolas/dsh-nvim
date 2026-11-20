@@ -353,8 +353,12 @@ local function ensure_buffer(session_id, title)
 end
 
 --- Resolve where a session view opens.
+--- @param override string|nil one-shot placement: "tab", "current", "vertical" or "horizontal"
 --- @return "tab"|"current"|"vertical"|"horizontal"
-local function location()
+local function location(override)
+  if override == "tab" or override == "current" or override == "vertical" or override == "horizontal" then
+    return override
+  end
   local cfg = config.options.chat
   if cfg.open_in == "tab" or cfg.split == "tab" then
     return "tab"
@@ -407,13 +411,18 @@ local function focus_tail(entry)
 end
 
 --- Show the session buffer in a window.
-local function show(entry)
+--- @param entry table
+--- @param layout {split: string|nil, width: integer|nil, height: integer|nil}|nil one-shot placement
+local function show(entry, layout)
   if focus(entry) then
     return
   end
 
   local cfg = config.options.chat
-  local target = location()
+  layout = type(layout) == "table" and layout or {}
+  local target = location(layout.split)
+  local width = tonumber(layout.width) or cfg.width
+  local height = tonumber(layout.height) or cfg.height
 
   if target == "tab" then
     -- `:tab sbuffer` opens the buffer directly, so no empty buffer is left behind.
@@ -421,10 +430,10 @@ local function show(entry)
   elseif target == "current" then
     vim.api.nvim_win_set_buf(0, entry.buf)
   elseif target == "horizontal" then
-    vim.cmd(("botright %dsplit"):format(cfg.height))
+    vim.cmd(("botright %dsplit"):format(height))
     vim.api.nvim_win_set_buf(0, entry.buf)
   else
-    vim.cmd(("botright %dvsplit"):format(cfg.width))
+    vim.cmd(("botright %dvsplit"):format(width))
     vim.api.nvim_win_set_buf(0, entry.buf)
   end
 
@@ -471,7 +480,9 @@ end
 
 --- Open (or focus) a session view.
 --- @param session_id string|nil omit to pick from the list
---- @param opts {title: string|nil}|nil title hint, used until the stream sends one
+--- @param opts {title: string|nil, layout: {split: string|nil, width: integer|nil, height: integer|nil}|nil}|nil
+--- `title` is a hint used until the stream sends one; `layout` places this view
+--- once (`:DshQuickChat` uses it), leaving `chat.open_in` alone.
 function M.open(session_id, opts)
   if not session_id then
     M.pick()
@@ -479,23 +490,32 @@ function M.open(session_id, opts)
   end
 
   local title = type(opts) == "table" and opts.title or nil
+  local layout = type(opts) == "table" and opts.layout or nil
   local entry = ensure_buffer(session_id, title)
   attach_keymaps(session_id)
-  show(entry)
+  show(entry, layout)
   mark_focused(entry)
   attach(session_id)
 end
 
---- Create a session in the current directory's workspace and open it.
---- @param opts {prompt: boolean|nil}|nil
+--- Create a session in the selected Workspace, or the current directory's
+--- workspace, and open it.
+--- @param opts {prompt: boolean|table|nil, mode: string|nil, layout: table|nil, on_open: fun(session_id: string)|nil}|nil
+--- `mode` is an Agent preset id the Session composes (DSH resolves it before
+--- creating the Session); `layout` places the view once, like `M.open`;
+--- `prompt = true` opens the default prompt after the view, and a table opens
+--- it with those surface options. `on_open` runs once the view exists, for
+--- commands that need the session the user just started.
 function M.new_session(opts)
+  opts = opts or {}
   server.context(function(err, ctx)
     if err then
       notify(err, vim.log.levels.ERROR)
       return
     end
 
-    local value, create_err, warning = session.create_in_workspace(ctx, vim.fn.getcwd())
+    local value, create_err, warning =
+      session.create_in_workspace(ctx, workspace.scope_path(), { agentPreset = opts.mode })
     if not value then
       notify(create_err or "cannot create session", vim.log.levels.ERROR)
       return
@@ -504,36 +524,54 @@ function M.new_session(opts)
       notify(warning, vim.log.levels.WARN)
     end
 
-    M.open(value.sessionId)
-    if opts and opts.prompt then
+    M.open(value.sessionId, { layout = opts.layout })
+    if opts.on_open then
+      opts.on_open(value.sessionId)
+    end
+    if opts.prompt then
+      local prompt_opts = type(opts.prompt) == "table" and opts.prompt or nil
       vim.schedule(function()
-        M.prompt(value.sessionId)
+        M.prompt(value.sessionId, prompt_opts)
       end)
     end
   end)
 end
 
---- Sessions currently offered by the picker, after applying `sessions.scope`
---- and `sessions.include_subagents`.
+--- Sessions currently offered by the picker, after applying the selected
+--- Workspace, `sessions.scope` and `sessions.include_subagents`.
 --- @param items table[]
 --- @return table[]
 local function scoped(items)
-  local choices = config.options.sessions.scope == "all" and items or session.filter_directory(items)
+  local choices
+  local selected = workspace.selected()
+  if selected then
+    -- An explicit Workspace selection is a stronger scope than `scope = "all"`.
+    choices = session.filter_directory(items, selected.path)
+  elseif config.options.sessions.scope == "all" then
+    choices = items
+  else
+    choices = session.filter_directory(items)
+  end
   if config.options.sessions.include_subagents == false then
     choices = session.filter_roots(choices)
   end
   return archive.filter(choices, config.options.sessions.include_archived == true)
 end
 
---- Where this directory is shown to the user, abbreviated.
+--- Where the current session scope is shown to the user, abbreviated.
 --- @return string
 local function here()
-  return vim.fn.fnamemodify(vim.fn.getcwd(), ":~")
+  return vim.fn.fnamemodify(workspace.scope_path(), ":~")
 end
 
 --- Prompt for the session picker, matching what the list actually contains.
 --- @return string
 local function picker_prompt()
+  local selected = workspace.selected()
+  if selected then
+    local title = type(selected.title) == "string" and selected.title ~= "" and selected.title or here()
+    return ("DSH sessions in %s"):format(title)
+  end
   if config.options.sessions.scope == "all" then
     -- The rows come from every directory; naming this one would be a lie.
     return "DSH sessions"
@@ -544,10 +582,11 @@ end
 --- Choose a session in this workspace with `vim.ui.select`.
 ---
 --- `on_choice` receives the selected SessionSummary. It is not called when the
---- user cancels, when nothing is listed, or when an empty workspace makes the
---- view create a brand-new session instead.
+--- user cancels or when nothing is listed; in an empty workspace the view
+--- creates a brand-new session instead, and `opts.on_created` receives it.
 --- @param on_choice fun(item: table)
-function M.pick_session(on_choice)
+--- @param opts {on_created: fun(session_id: string)|nil}|nil
+function M.pick_session(on_choice, opts)
   server.context(function(err, ctx)
     if err then
       notify(err, vim.log.levels.ERROR)
@@ -568,7 +607,7 @@ function M.pick_session(on_choice)
     if #choices == 0 then
       if #items == 0 then
         notify("no sessions yet; creating one")
-        M.new_session()
+        M.new_session({ on_open = opts and opts.on_created })
         return
       end
       notify(("no sessions in %s"):format(here()))
@@ -586,9 +625,34 @@ function M.pick()
   end)
 end
 
+--- Resolve the session a command should act on.
+---
+--- Like the menu, the view at the cursor wins, then the most recently used
+--- view still open in another tab or window. Only when no view is open at all
+--- does it offer the session picker and open the chosen session. A workspace
+--- with no sessions gets one created, so `continue` always receives a target.
+--- @param continue fun(session_id: string)
+function M.resolve_session(continue)
+  local session_id = M.current() or M.recent_view()
+  if session_id then
+    continue(session_id)
+    return
+  end
+
+  M.pick_session(function(item)
+    M.open(item.sessionId, { title = session.title(item) })
+    continue(item.sessionId)
+  end, {
+    on_created = continue,
+  })
+end
+
 --- Send a user message to a session.
 --- @param session_id string|nil defaults to the session of the current buffer
---- @param opts {title: string|nil, initial: string|nil}|nil prompt surface options
+--- @param opts {title: string|nil, initial: string|nil, split: string|nil, width: integer|nil, height: integer|nil, anchor: integer|string|nil}|nil
+--- Prompt surface options: `initial` prefills the buffer, `split` forces the
+--- split window with `width`/`height`, and `anchor` names the window it splits
+--- (`"view"` means this session's window, which is what `:DshQuickChat` uses).
 function M.prompt(session_id, opts)
   session_id = session_id or M.current()
   if not session_id then
@@ -602,7 +666,19 @@ function M.prompt(session_id, opts)
   end
 
   opts = opts or {}
-  prompt_ui.open({ title = opts.title or "DSH prompt", initial = opts.initial }, function(text)
+  local anchor = opts.anchor
+  if anchor == "view" then
+    anchor = entry.win
+  end
+
+  prompt_ui.open({
+    title = opts.title or "DSH prompt",
+    initial = opts.initial,
+    split = opts.split,
+    width = opts.width,
+    height = opts.height,
+    anchor = anchor,
+  }, function(text)
     -- The prompt window is gone and focus is back here: pin the view to its
     -- newest line so the streamed reply keeps scrolling into view.
     focus_tail(entry)
@@ -896,8 +972,9 @@ end
 --- where `chat.open_in` says (or restored in its own window).
 ---
 --- From a buffer that is not a session view there is no position to cycle
---- from, so this starts a new session in this directory's workspace, opens it
---- where `chat.open_in` says and opens its prompt (the `:DshNew!` path).
+--- from, so this starts a new session in the selected workspace (or this
+--- directory's), opens it where `chat.open_in` says and opens its prompt (the
+--- `:DshNew!` path).
 function M.next_chat()
   local views = ordered_views()
   local current = vim.api.nvim_get_current_buf()

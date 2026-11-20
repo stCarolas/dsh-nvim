@@ -92,6 +92,15 @@ M.defaults = {
     max_highlight_lines = 300,
   },
 
+  --- Transcript search behind `:DshSearch` and the `search` keymap.
+  --- Lists one row per prompt, reply, tool call, error and notice of a session
+  --- buffer and jumps to the one you pick. Telescope renders the picker when it
+  --- is installed, `vim.ui.select` otherwise.
+  search = {
+    --- Rows offered by default: "all", "prompts", "replies", "tools", "notes".
+    scope = "all",
+  },
+
   chat = {
     --- Where a session view opens: "split", "tab", or "current".
     open_in = "split",
@@ -119,6 +128,30 @@ M.defaults = {
     height = 10,
   },
 
+  --- One-shot quick chat: `:DshQuickChat` composes a new Session in a chosen
+  --- Agent mode, opens its view in one split and the prompt in a second one.
+  quick_chat = {
+    --- Agent preset ("mode") the new Session composes, e.g. `"chat"` when the
+    --- deployment publishes one. `nil` uses the deployment default. A preset
+    --- the deployment does not publish falls back to that default with a
+    --- warning, so the command still opens a usable chat.
+    mode = "chat",
+    --- Session view placement; `quick_chat.chat.split` is the orientation.
+    chat = { split = "horizontal", width = 100, height = 20 },
+    --- Prompt placement. The prompt is a split of the session view's window,
+    --- so the two share one band: "vertical" puts it beside the session view,
+    --- "horizontal" below it.
+    prompt = { split = "vertical", width = 70, height = 10 },
+    --- Copy the Visual selection that was active into the prompt.
+    selection = {
+      enabled = true,
+      --- Lines copied at most; 0 copies the whole selection.
+      max_lines = 200,
+      --- Prefix the selection with `<path> (lines N-M):`.
+      reference = true,
+    },
+  },
+
   keymaps = {
     --- Buffer-local mappings inside a DSH chat buffer.
     prompt = "<CR>",
@@ -129,7 +162,10 @@ M.defaults = {
 
     --- Optional global mappings, e.g.
     --- { new_session = "<leader>dn", pick = "<leader>ds",
-    ---   next_chat = "<leader>dx", interrupt = "<leader>di" }.
+    ---   next_chat = "<leader>dx", interrupt = "<leader>di",
+    ---   model = "<leader>dm", mode = "<leader>dc",
+    ---   workspace = "<leader>dw", quick_chat = "<leader>dq",
+    ---   search = "<leader>d/" }.
     global = {},
   },
 
@@ -237,6 +273,73 @@ function M.validate()
     end
     prompt.width = dimension(prompt.width, M.defaults.prompt.width, 10)
     prompt.height = dimension(prompt.height, M.defaults.prompt.height, 3)
+  end
+
+  local quick = M.options.quick_chat
+  local quick_defaults = M.defaults.quick_chat
+  if type(quick) ~= "table" then
+    M.options.quick_chat = vim.deepcopy(quick_defaults)
+    warn("quick_chat config must be a table; using the defaults")
+  else
+    if quick.mode ~= nil and (type(quick.mode) ~= "string" or vim.trim(quick.mode) == "") then
+      quick.mode = quick_defaults.mode
+      warn(("quick_chat.mode must be a non-empty string or nil; using %q"):format(tostring(quick.mode)))
+    end
+
+    local layout = quick.chat
+    if type(layout) ~= "table" then
+      quick.chat = vim.deepcopy(quick_defaults.chat)
+      warn("quick_chat.chat config must be a table; using the defaults")
+    else
+      if layout.split ~= "horizontal" and layout.split ~= "vertical" and layout.split ~= "tab" and layout.split ~= "current" then
+        local invalid = layout.split
+        layout.split = quick_defaults.chat.split
+        warn(
+          ("quick_chat.chat.split must be \"horizontal\", \"vertical\", \"tab\" or \"current\" (got %s); using %q"):format(
+            vim.inspect(invalid),
+            layout.split
+          )
+        )
+      end
+      layout.width = dimension(layout.width, quick_defaults.chat.width, 20)
+      layout.height = dimension(layout.height, quick_defaults.chat.height, 5)
+    end
+
+    local surface = quick.prompt
+    if type(surface) ~= "table" then
+      quick.prompt = vim.deepcopy(quick_defaults.prompt)
+      warn("quick_chat.prompt config must be a table; using the defaults")
+    else
+      if surface.split ~= "horizontal" and surface.split ~= "vertical" then
+        local invalid = surface.split
+        surface.split = quick_defaults.prompt.split
+        warn(
+          ("quick_chat.prompt.split must be \"horizontal\" or \"vertical\" (got %s); using %q"):format(
+            vim.inspect(invalid),
+            surface.split
+          )
+        )
+      end
+      surface.width = dimension(surface.width, quick_defaults.prompt.width, 10)
+      surface.height = dimension(surface.height, quick_defaults.prompt.height, 3)
+    end
+
+    local selection = quick.selection
+    if type(selection) ~= "table" then
+      quick.selection = vim.deepcopy(quick_defaults.selection)
+      warn("quick_chat.selection config must be a table; using the defaults")
+    else
+      for _, key in ipairs({ "enabled", "reference" }) do
+        if type(selection[key]) ~= "boolean" then
+          selection[key] = quick_defaults.selection[key]
+          warn(("quick_chat.selection.%s must be a boolean; using %s"):format(key, tostring(selection[key])))
+        end
+      end
+      if type(selection.max_lines) ~= "number" or selection.max_lines ~= selection.max_lines or selection.max_lines < 0 then
+        selection.max_lines = quick_defaults.selection.max_lines
+        warn(("quick_chat.selection.max_lines must be a non-negative number; using %d"):format(selection.max_lines))
+      end
+    end
   end
 
   return M.options

@@ -369,7 +369,63 @@ session.prompt = real_prompt
 check("cancelling the prefilled prompt closes it", not vim.api.nvim_win_is_valid(prefilled_win))
 check("cancelling the prefilled prompt returns to the view", vim.api.nvim_get_current_win() == view_win)
 
+-- 9. `resolve_session` targets the view at the cursor, asks when no view is
+-- open, and creates a session when the workspace has none.
+local resolved
+chat.resolve_session(function(session_id)
+  resolved = session_id
+end)
+check("resolve_session uses the view at the cursor", resolved == sid_focus, tostring(resolved))
+
 chat.close(sid_focus)
+local real_list = session.list
+local real_filter = session.filter_directory
+local real_create = session.create_in_workspace
+local real_select = vim.ui.select
+local listed = {
+  { sessionId = "session-eeeeeeee-1111-2222-3333-444444444444", updatedAt = 1, projections = { values = { title = "Picked" } } },
+}
+session.list = function()
+  return listed
+end
+session.filter_directory = function(items)
+  return items
+end
+vim.ui.select = function(labels, _, callback)
+  callback(labels[1])
+end
+
+resolved = nil
+chat.resolve_session(function(session_id)
+  resolved = session_id
+end)
+check("resolve_session picks a session when no view is open", resolved == listed[1].sessionId, tostring(resolved))
+check("resolve_session opens the picked session", resolved ~= nil and chat.is_open(resolved))
+if resolved then
+  chat.close(resolved)
+end
+
+-- An empty workspace creates the session the command acts on.
+session.list = function()
+  return {}
+end
+session.create_in_workspace = function()
+  return { sessionId = "session-ffffffff-1111-2222-3333-444444444444" }
+end
+resolved = nil
+chat.resolve_session(function(session_id)
+  resolved = session_id
+end)
+check("resolve_session creates a session in an empty workspace", resolved == "session-ffffffff-1111-2222-3333-444444444444", tostring(resolved))
+check("resolve_session opens the created session", resolved ~= nil and chat.is_open(resolved))
+if resolved then
+  chat.close(resolved)
+end
+
+session.list = real_list
+session.filter_directory = real_filter
+session.create_in_workspace = real_create
+vim.ui.select = real_select
 
 chat.shutdown()
 

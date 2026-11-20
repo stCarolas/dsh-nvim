@@ -9,6 +9,49 @@ local M = {}
 local config = require("dsh.config")
 local http = require("dsh.http")
 
+--- Workspace selected as the plugin's session scope, or nil for Neovim's cwd.
+--- Only the plugin's pickers and session creation consult it; Neovim's own
+--- working directory is never changed.
+--- @type {workspaceId: string|nil, path: string, title: string|nil}|nil
+local selected = nil
+
+--- Select the Workspace that scopes session pickers and `:DshNew`.
+--- @param value table|nil workspace row; nil returns to Neovim's cwd
+--- @return boolean|nil ok
+--- @return string|nil error
+function M.select(value)
+  if value == nil then
+    selected = nil
+    return true
+  end
+  if type(value) ~= "table" or type(value.path) ~= "string" or value.path == "" then
+    return nil, "workspace has no usable directory"
+  end
+  selected = {
+    workspaceId = type(value.workspaceId) == "string" and value.workspaceId or nil,
+    path = value.path,
+    title = type(value.title) == "string" and value.title or nil,
+  }
+  return true
+end
+
+--- Drop the selected Workspace, returning to Neovim's current directory.
+function M.clear_selection()
+  selected = nil
+end
+
+--- The selected Workspace, or nil when sessions follow Neovim's cwd.
+--- @return {workspaceId: string|nil, path: string, title: string|nil}|nil
+function M.selected()
+  return selected
+end
+
+--- Directory the plugin's session scope currently targets.
+--- @return string
+function M.scope_path()
+  return selected and selected.path or vim.fn.getcwd()
+end
+
 --- Resolve the Workspace over `path`, registering it when none exists yet.
 ---
 --- `workspace/create` is idempotent, so this is safe to call for every new

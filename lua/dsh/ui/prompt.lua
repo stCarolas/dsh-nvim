@@ -173,20 +173,66 @@ local function open_float(opts, on_submit)
   vim.api.nvim_buf_add_highlight(buf, namespace, "Comment", 0, 0, -1)
 
   attach(buf, win, origin, on_submit, true)
+  -- A selection prefix can span several lines: type after it, not into it.
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  vim.api.nvim_win_set_cursor(win, { #lines, #(lines[#lines] or "") })
   vim.cmd("startinsert!")
 end
 
+--- Split a window and return the new one.
+---
+--- A prompt opened from `:DshQuickChat` belongs beside the session view that
+--- opened it, so it splits that window instead of taking a full-height (or
+--- full-width) edge of the editor. `'splitright'`/`'splitbelow'` place the new
+--- window and are restored afterwards; without an anchor the historical edge
+--- split is kept, and a failed anchored split falls back to it.
+--- @param anchor integer|nil window to split
+--- @param vertical boolean
+--- @return integer win
+local function split_window(anchor, vertical)
+  local function edge()
+    vim.cmd(vertical and "botright vsplit" or "botright split")
+    return vim.api.nvim_get_current_win()
+  end
+
+  if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
+    return edge()
+  end
+
+  local splitright, splitbelow = vim.o.splitright, vim.o.splitbelow
+  vim.o.splitright, vim.o.splitbelow = true, true
+  local ok, win = pcall(function()
+    local created
+    vim.api.nvim_win_call(anchor, function()
+      vim.cmd(vertical and "vsplit" or "split")
+      created = vim.api.nvim_get_current_win()
+    end)
+    return created
+  end)
+  vim.o.splitright, vim.o.splitbelow = splitright, splitbelow
+
+  if not ok or not (win and vim.api.nvim_win_is_valid(win)) then
+    return edge()
+  end
+  return win
+end
+
 --- Open the prompt as a named scratch buffer in its own split window.
---- @param opts {title: string|nil, initial: string|nil}
+---
+--- `opts.split`, `opts.width` and `opts.height` override `prompt.open_in =
+--- "split"` settings for one call, and `opts.anchor` is the window the prompt
+--- splits (the session view, for `:DshQuickChat`).
+--- @param opts {title: string|nil, initial: string|nil, split: string|nil, width: integer|nil, height: integer|nil, anchor: integer|nil}
 --- @param on_submit fun(text: string)
 local function open_split(opts, on_submit)
   local settings = config.options.prompt or config.defaults.prompt
-  local vertical = (settings.split or config.defaults.prompt.split) == "vertical"
+  local defaults = config.defaults.prompt
+  local vertical = (opts.split or settings.split or defaults.split) == "vertical"
   local origin = vim.api.nvim_get_current_win()
 
   -- Keep the window inside the editor even if the configured size is huge.
-  local width = settings.width or config.defaults.prompt.width
-  local height = settings.height or config.defaults.prompt.height
+  local width = tonumber(opts.width) or settings.width or defaults.width
+  local height = tonumber(opts.height) or settings.height or defaults.height
   width = math.max(10, math.min(width, math.max(10, vim.o.columns - 10)))
   height = math.max(3, math.min(height, math.max(3, vim.o.lines - 6)))
 
@@ -202,13 +248,13 @@ local function open_split(opts, on_submit)
   -- A hook for user settings such as `autocmd FileType dsh-prompt setlocal spell`.
   vim.bo[buf].filetype = "dsh-prompt"
 
-  vim.cmd(vertical and "botright vsplit" or "botright split")
-  local win = vim.api.nvim_get_current_win()
+  local win = split_window(opts.anchor, vertical)
   vim.api.nvim_win_set_buf(win, buf)
+  vim.api.nvim_set_current_win(win)
   if vertical then
-    vim.api.nvim_win_set_width(win, width)
+    pcall(vim.api.nvim_win_set_width, win, width)
   else
-    vim.api.nvim_win_set_height(win, height)
+    pcall(vim.api.nvim_win_set_height, win, height)
   end
 
   vim.wo[win].number = false
@@ -231,13 +277,16 @@ end
 --- floating popup also cancels on `<Esc>`.
 ---
 --- `prompt.open_in = "float"` (default) uses the centered popup;
---- `"split"` opens the scratch buffer in its own window.
---- @param opts {title: string|nil, initial: string|nil}
+--- `"split"` opens the scratch buffer in its own window. A call may override
+--- the surface per invocation: `opts.split` ("vertical" or "horizontal")
+--- forces the split window with `opts.width`/`opts.height`, and `opts.anchor`
+--- is the window it splits instead of the editor edge.
+--- @param opts {title: string|nil, initial: string|nil, split: string|nil, width: integer|nil, height: integer|nil, anchor: integer|nil}
 --- @param on_submit fun(text: string)
 function M.open(opts, on_submit)
   opts = opts or {}
   local settings = config.options.prompt or config.defaults.prompt
-  if settings.open_in == "split" then
+  if opts.split or settings.open_in == "split" then
     open_split(opts, on_submit)
   else
     open_float(opts, on_submit)

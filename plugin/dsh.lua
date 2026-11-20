@@ -20,6 +20,15 @@ vim.api.nvim_create_user_command("DshNextChat", function()
   dsh().next_chat()
 end, { desc = "DSH: next open session view; from elsewhere, new session + prompt" })
 
+vim.api.nvim_create_user_command("DshQuickChat", function(command)
+  local mode = vim.trim(command.args or "")
+  dsh().quick_chat({ mode = mode ~= "" and mode or nil })
+end, {
+  nargs = "?",
+  range = true,
+  desc = "DSH: new session in a chat mode, session view + prompt split (prefill: visual selection)",
+})
+
 vim.api.nvim_create_user_command("DshSessions", function()
   dsh().pick()
 end, { desc = "DSH: pick a session in this directory" })
@@ -27,6 +36,33 @@ end, { desc = "DSH: pick a session in this directory" })
 vim.api.nvim_create_user_command("DshMenu", function()
   dsh().menu()
 end, { desc = "DSH: open the action menu (sessions, skills, commands)" })
+
+vim.api.nvim_create_user_command("DshModel", function()
+  dsh().model()
+end, { desc = "DSH: pick the model of the current session" })
+
+vim.api.nvim_create_user_command("DshMode", function()
+  dsh().mode()
+end, { desc = "DSH: pick an Agent mode (Standard, Creator, ...) for this or new sessions" })
+
+vim.api.nvim_create_user_command("DshWorkspace", function(command)
+  if command.bang then
+    dsh().clear_workspace()
+  else
+    dsh().workspace()
+  end
+end, { bang = true, desc = "DSH: pick the workspace sessions are scoped to (bang: use Neovim's cwd)" })
+
+vim.api.nvim_create_user_command("DshSearch", function(command)
+  local scope = vim.trim(command.args or "")
+  dsh().search({ scope = scope ~= "" and scope or nil })
+end, {
+  nargs = "?",
+  complete = function()
+    return { "all", "prompts", "replies", "tools", "notes" }
+  end,
+  desc = "DSH: search prompts, replies, tool calls and notices in the session buffer",
+})
 
 vim.api.nvim_create_user_command("DshPrompt", function()
   dsh().prompt()

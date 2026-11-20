@@ -280,7 +280,165 @@ check("renderer lists and quotes parsed", (rendered_counts.bullet or 0) == 1 and
 check("renderer code block parsed", (rendered_counts.code_block or 0) == 1)
 check("renderer tool exchange parsed", (rendered_counts.tool_exchange or 0) == 1)
 
--- 7. The plugin can start the highlighter on a dshchat buffer.
+-- 7. The outline query: outline.nvim's `treesitter` provider (and aerial.nvim)
+-- only accepts a buffer when `queries/<lang>/aerial.scm` resolves, so without
+-- this file a session buffer answers "No supported provider".
+local aerial_file = vim.api.nvim_get_runtime_file("queries/dshchat/aerial.scm", false)[1]
+check("outline query file is on the runtimepath", aerial_file ~= nil)
+
+local aerial = vim.treesitter.query.get("dshchat", "aerial")
+check("outline query loads", aerial ~= nil)
+if aerial then
+  local symbols, named, bad_kind = 0, 0, nil
+  local kinds = {}
+  for _, match, metadata in aerial:iter_matches(document, buf) do
+    local captures = {}
+    for id in pairs(match) do
+      captures[aerial.captures[id]] = true
+    end
+    if captures.name then
+      named = named + 1
+    end
+    if captures.symbol then
+      symbols = symbols + 1
+      -- The provider rejects a pattern without a valid LSP SymbolKind name.
+      local kind = metadata and metadata.kind
+      if kind and vim.lsp.protocol.SymbolKind[kind] then
+        kinds[kind] = true
+      else
+        bad_kind = tostring(kind)
+      end
+    end
+  end
+  check("outline query marks every transcript marker", symbols == 8, tostring(symbols))
+  check("every outline symbol is named", named == symbols, ("%d/%s"):format(named, symbols))
+  check("every outline symbol has a valid SymbolKind", bad_kind == nil, tostring(bad_kind))
+  check(
+    "outline kinds describe the transcript",
+    kinds.File and kinds.Namespace and kinds.Module and kinds.String and kinds.Method,
+    vim.inspect(vim.tbl_keys(kinds))
+  )
+end
+
+-- 8. The nested turn outline. The grammar is line oriented, so the aerial
+-- query above cannot nest (Tree-sitter ancestry is flat); `dsh.outline` groups
+-- the same AST into prompt → reply → tool calls itself.
+local dsh_outline = require("dsh.outline")
+check("outline provider reports the session buffer", dsh_outline.available(buf))
+
+local outline_tree = dsh_outline.build(buf)
+check("outline nests replies under the prompt", #outline_tree == 2, tostring(#outline_tree))
+local outline_title, outline_turn = outline_tree[1], outline_tree[2]
+check(
+  "outline title and prompt kinds",
+  outline_title
+    and outline_title.kind == 1
+    and outline_title.name == "Fix the flaky retry test"
+    and outline_turn
+    and outline_turn.kind == 3
+    and outline_turn.name == "fix the flaky retry test",
+  outline_title and outline_turn and vim.inspect({ outline_title.name, outline_turn.name })
+)
+
+local outline_sections = outline_turn and outline_turn.children or {}
+local outline_reply = outline_sections[1]
+check(
+  "outline nests the reply under the prompt",
+  outline_reply and outline_reply.kind == 2 and outline_reply.name == "The retry loop copies the backoff value before the jitter is applied.",
+  outline_reply and vim.inspect({ outline_reply.kind, outline_reply.name })
+)
+
+local outline_commands = outline_sections[2]
+check(
+  "outline groups the turn's tool calls under Commands outputs",
+  outline_commands and outline_commands.kind == 19 and outline_commands.name == "Commands outputs",
+  outline_commands and vim.inspect({ outline_commands.kind, outline_commands.name })
+)
+
+local outline_tools = outline_commands and outline_commands.children or {}
+check("outline keeps the tool call inside the group", #outline_tools == 1, tostring(#outline_tools))
+check(
+  "outline labels the tool call without its marker",
+  outline_tools[1] and outline_tools[1].kind == 6 and outline_tools[1].name == "read(path=src/retry.ts)",
+  outline_tools[1] and vim.inspect({ outline_tools[1].kind, outline_tools[1].name })
+)
+check(
+  "outline tool call range covers its output",
+  outline_tools[1] and outline_tools[1].range.start.line == 21 and outline_tools[1].range["end"].line == 26,
+  outline_tools[1] and vim.inspect({ outline_tools[1].range.start.line, outline_tools[1].range["end"].line })
+)
+check(
+  "outline group range spans its calls",
+  outline_commands and outline_commands.range["end"].line == 26,
+  outline_commands and tostring(outline_commands.range["end"].line)
+)
+check(
+  "outline keeps errors and notices with the reply",
+  #outline_reply.children == 2,
+  tostring(#outline_reply.children)
+)
+
+-- A second prompt starts a new top-level turn, so collapsing the first hides
+-- its replies and their tools without touching the second.
+local two_turns = {
+  "▌ You",
+  "first prompt",
+  "",
+  "▌ Assistant",
+  "reply one",
+  "",
+  "  ⚙ a()",
+  "    out",
+  "",
+  "▌ You",
+  "second prompt",
+  "",
+  "▌ Assistant  (interrupted)",
+  "(no text)",
+}
+local turns_buf = vim.api.nvim_create_buf(false, true)
+vim.bo[turns_buf].filetype = "dshchat"
+vim.api.nvim_buf_set_lines(turns_buf, 0, -1, false, two_turns)
+local turns = dsh_outline.build(turns_buf)
+check("outline starts a new top-level turn per prompt", #turns == 2, tostring(#turns))
+local first_commands = turns[1] and turns[1].children and turns[1].children[2]
+check(
+  "outline gathers the first turn's tool call in its own group",
+  first_commands
+    and first_commands.name == "Commands outputs"
+    and #first_commands.children == 1
+    and first_commands.children[1].name == "a()",
+  first_commands and vim.inspect(first_commands.name) or "no group"
+)
+check(
+  "outline leaves the second turn without a commands group",
+  turns[2] and turns[2].children and #turns[2].children == 1 and turns[2].children[1].name == "Assistant  (interrupted)",
+  turns[2] and vim.inspect(turns[2].children and #turns[2].children or -1)
+)
+check(
+  "outline keeps interrupted replies labelled",
+  turns[2] and turns[2].children[1] and turns[2].children[1].name == "Assistant  (interrupted)",
+  turns[2] and turns[2].children[1] and turns[2].children[1].name
+)
+check(
+  "outline turn ranges stop before the next prompt",
+  turns[1] and turns[1].range["end"].line == 8 and turns[2].range.start.line == 9,
+  vim.inspect({ turns[1] and turns[1].range["end"].line, turns[2] and turns[2].range.start.line })
+)
+
+-- The outline.nvim adapter is a plain provider module: it loads without
+-- outline.nvim being installed.
+local outline_provider = require("outline.providers.dshchat")
+local outline_supported, outline_info = outline_provider.supports_buffer(buf)
+check("outline provider takes a session buffer", outline_supported == true and outline_info and outline_info.buf == buf)
+local other_buf = vim.api.nvim_create_buf(false, true)
+vim.bo[other_buf].filetype = "lua"
+check("outline provider declines other buffers", outline_provider.supports_buffer(other_buf) == false)
+local outline_received
+outline_provider.request_symbols(function(symbols) outline_received = symbols end, nil, outline_info)
+check("outline provider returns the nested tree", outline_received ~= nil and #outline_received == 2)
+
+-- 9. The plugin can start the highlighter on a dshchat buffer.
 local started = treesitter.start(buf)
 local active = vim.treesitter.highlighter and vim.treesitter.highlighter.active
 check("treesitter.start attaches the highlighter", started and active ~= nil and active[buf] ~= nil)

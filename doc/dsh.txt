@@ -32,17 +32,32 @@ appear in |:ls|, |:bnext| / |:bprevious|, or bufferline-style lists. Use
 ==============================================================================
 COMMANDS                                                        *dsh-commands*
 
-:Dsh                    Open a session: the current one, or pick one in this
-                        directory.
-:DshNew                 Create a session in this directory's workspace.
+:Dsh                    Open a session: the current one, or pick one in the
+                        current session scope.
+:DshNew                 Create a session in the selected workspace (or this
+                        directory's) and open it.
 :DshNew!                Create a session, then open the prompt.
+:DshQuickChat [mode]     Create a session in a chat mode, open its view in
+                        a split and the prompt in a second split, prefilled
+                        with the Visual selection. See |dsh-quick-chat|.
 :DshNextChat            Switch to the next open session view; from a buffer
                         that is not a session view, create a session and
                         open its prompt.
-:DshSessions            Pick a session rooted at the current directory.
+:DshSessions            Pick a session in the current session scope.
 :DshMenu                Nested menu: new session, open session, skills,
                         commands.
+:DshModel               Pick the model of the current or chosen session.
+:DshMode                Pick an Agent mode: this blank session's preset, or
+                        the preset new sessions compose.
+:DshWorkspace           Pick the Workspace that session pickers and
+                        |:DshNew| use.
+:DshWorkspace!          Return the session scope to Neovim's current
+                        directory.
 :DshPrompt              Open the prompt for the current session.
+:DshSearch [scope]       List the session buffer's prompts, replies, tool
+                        calls, errors and notices and jump to the chosen
+                        one. `scope` is "all" (default), "prompts",
+                        "replies", "tools" or "notes". See |dsh-search|.
 :DshRefresh             Re-open the stream and re-read history.
 :DshCancel              Cancel the running turn; like |:DshInterrupt| but quiet.
 :DshInterrupt           Interrupt the running turn of the session in view.
@@ -65,6 +80,48 @@ whose window was closed or reused for another buffer is shown again where
 `chat.open_in` says. From a buffer that is not a session view it creates a
 session in this directory's workspace, opens it where `chat.open_in` says,
 and opens its prompt (the |:DshNew!| path).
+
+==============================================================================
+QUICK CHAT                                                    *dsh-quick-chat*
+
+:DshQuickChat [mode] is the one-step path for "start talking to DSH about
+this code". It
+
+  1. creates a session in the current session scope, composed with the Agent
+     mode named by the optional argument or by `quick_chat.mode` (default
+     "chat"). The preset travels on `session/create`, which DSH resolves
+     before it mints the session, so the first turn already runs in that
+     mode. A mode the deployment does not publish is not fatal: creation is
+     retried without it and a warning lists the ids the deployment does
+     publish (built-in: standard, ptc, minimal, cordis; set
+     `quick_chat.mode = nil` to stop asking for one);
+  2. opens the session view as a horizontal split, leaving the code above it;
+  3. opens the prompt as a vertical split of that view's window, so the chat
+     and the input line share one band. Submitting closes the prompt and the
+     view expands back;
+  4. copies the Visual selection that was active into the prompt, with its
+     file name, line range and filetype: >text
+        lua/dsh/init.lua (lines 60-63):
+        ```lua
+        function M.open(session_id)
+          ...
+        end
+        ```
+<
+     Both `:'<,'>DshQuickChat` (pressing `:` in Visual mode) and a plain
+     :DshQuickChat after leaving Visual mode read the same `'<` and `'>`
+     marks. The marks are buffer-local and only the current buffer is read,
+     so run the command from the buffer holding the selection.
+
+`quick_chat.selection` controls the prefill: `enabled = false` turns it off,
+`reference = false` drops the file line, and `max_lines` (200 by default, 0
+for no limit) caps it — a truncated selection says how many lines were left
+out. `quick_chat.chat` and `quick_chat.prompt` choose the orientations and
+sizes, independently of `chat.open_in` and `prompt.open_in`, which keep
+applying to |:Dsh|, |:DshNew| and |:DshPrompt|.
+
+`require("dsh").quick_chat({ mode = "ptc" })` is the Lua entry point, and
+`keymaps.global.quick_chat` maps it. See |dsh-config|.
 
 ==============================================================================
 SHARED SERVER                                                   *dsh-shared*
@@ -134,7 +191,9 @@ into view.
 Global keymaps can be configured with `keymaps.global`; see |dsh-config|.
 `keymaps.global.interrupt` maps |:DshInterrupt|, so a running turn can be
 stopped from a prompt window or any other buffer. `keymaps.global.next_chat`
-maps |:DshNextChat|.
+maps |:DshNextChat|, and `keymaps.global.quick_chat` maps |:DshQuickChat|.
+`keymaps.global.model`, `keymaps.global.mode` and `keymaps.global.workspace`
+map |:DshModel|, |:DshMode| and |:DshWorkspace|.
 
 ==============================================================================
 STATUS API                                                    *dsh-status-api*
@@ -192,6 +251,52 @@ open in another tab or window, so the catalogs open directly when a session
 is already open. Only when no view is open at all does it offer the session
 picker first, open the chosen session, and continue with the submenu. <Esc>
 cancels any level.
+
+==============================================================================
+WORKSPACES                                                     *dsh-workspace*
+
+DSH groups Sessions under Workspaces, the project rows the Web sidebar shows.
+By default the plugin scopes session pickers and |:DshNew| to the directory
+Neovim runs in. |:DshWorkspace| reads DSH's live `workspace/follow` roster and
+makes the chosen Workspace the plugin's session scope:
+
+- |:DshSessions|, |:Dsh| and the menu's "open session…" list that
+  Workspace's Sessions;
+- |:DshNew| and |:DshNew!| create their Session inside it;
+- `sessions.scope = "all"` is overridden while a Workspace is selected.
+
+The roster carries each Workspace's Session count and stays live as Sessions
+join it; the count keeps an archived Session's slot until it is restored. The
+first picker row returns to Neovim's current directory; |:DshWorkspace!| does
+the same without a picker.
+
+Selection is client-side: it never changes Neovim's working directory, file
+paths or LSP roots, and it is not persisted beyond the Neovim session.
+
+==============================================================================
+MODEL AND MODE                                              *dsh-model-mode*
+
+:DshModel and :DshMode are flat |vim.ui.select()| pickers over the catalogs
+the DSH Web UI uses. Cancelling either changes nothing.
+
+:DshModel reads `session/modelCatalog` and lists every routable model as
+"Provider · Model — description". The current model is marked; a blank
+session marks the deployment default. Choosing a model switches it with
+`session/selectModel` and starts at that model's advertised default reasoning
+effort. The target session is the view at the cursor, then the most recently
+used open view; with no view open, the session picker runs first (and an
+empty workspace creates a session to act on).
+
+:DshMode reads `agentPresets/list` and lists the Agent presets the deployment
+composes. Built-in ids use the Web UI's names: `standard` is Standard mode,
+`cordis` is Creator mode, `ptc` is PTC mode and `minimal` is Minimal mode.
+A preset declared by a bundle keeps its own name and description. On a blank
+session (no turn has started yet) the choice applies to that session with
+`agentPresets/select`. DSH fixes a session's composition once its first turn
+starts, so from a started session — or when no session view is open — the
+choice writes the preset new sessions compose instead, through
+`settings/update` in the `agent-preset-registry` namespace. The picker prompt
+says which case applies.
 
 ==============================================================================
 QUESTIONS AND APPROVALS                                       *dsh-questions*
@@ -281,17 +386,33 @@ All keys are optional; defaults shown. >lua
         width = 80,             -- columns for "vertical"
         height = 10,            -- rows for "horizontal"
       },
+      quick_chat = {
+        mode = "chat",          -- Agent preset id (nil => deployment default)
+        chat = { split = "horizontal", width = 100, height = 20 },
+        prompt = { split = "vertical", width = 70, height = 10 },
+        selection = {
+          enabled = true,       -- prefill with the Visual selection
+          max_lines = 200,      -- 0 copies everything
+          reference = true,     -- prefix "<path> (lines N-M):"
+        },
+      },
       interactions = {
         enabled = true,         -- answer forwarded questions and approvals
         questions = true,       -- ask_user_question tool calls
         approvals = true,       -- permission prompts for sensitive tools
+      },
+      search = {
+        scope = "all",          -- also: prompts, replies, tools, notes
       },
       keymaps = {
         prompt = "<CR>", refresh = "R", cancel = "<C-c>",
         sessions = "<localleader>s", close = "q",
         global = {},            -- e.g. { new_session = "<leader>dn",
                                 --        next_chat = "<leader>dx",
-                                --        interrupt = "<leader>di" }
+                                --        interrupt = "<leader>di",
+                                --        model = "<leader>dm",
+                                --        mode = "<leader>dc",
+                                --        workspace = "<leader>dw" }
       },
       notifications = true,
     })
@@ -320,12 +441,18 @@ orientation and `prompt.width` / `prompt.height` its size. A misspelled
 `open_in` or `split` warns and falls back to the default instead of silently
 keeping the popup.
 
-Sessions are scoped to the directory Neovim runs in. :DshNew resolves the
-DSH workspace for that directory (registering it when it does not exist yet)
-and creates the session inside it, so new sessions are grouped under the same
-project in the DSH web UI. :DshSessions lists only sessions whose cwd is the
-current directory; symlinked spellings of the directory compare equal because
-both paths are canonicalized with `realpath` first.
+`quick_chat` configures |:DshQuickChat| only: the Agent mode its sessions
+compose, the two splits and the Visual-selection prefill. It never changes
+where |:Dsh|, |:DshNew| or |:DshPrompt| put their windows.
+
+Sessions are scoped to the selected Workspace, or to the directory Neovim
+runs in when none is selected. |:DshWorkspace| switches that scope and
+|:DshWorkspace!| clears it. :DshNew resolves the DSH workspace for the scoped
+directory (registering it when it does not exist yet) and creates the session
+inside it, so new sessions are grouped under the same project in the DSH web
+UI. :DshSessions lists only sessions whose cwd is the scoped directory;
+symlinked spellings compare equal because both paths are canonicalized with
+`realpath` first.
 
 `sessions.scope` controls that filter: "cwd" (default), or "all" to list every
 session on the server; in "all" mode the picker prompt does not name a
@@ -385,14 +512,45 @@ Highlight groups are created with `default = true`, so any colourscheme or
 Set `markdown.enabled = false` to show the raw source instead.
 
 ==============================================================================
+SEARCH                                                            *dsh-search*
+
+The session buffer is the whole transcript, so |:DshSearch| lists it as rows
+instead of matching half a message at a time: the title, each prompt, each
+reply, each tool call with its output, and the errors and notices DSH printed:
+
+    You       fix the flaky retry test
+    Assistant The retry loop copies the backoff value before the jitter …
+    tool      read(path=src/retry.ts) 1 export function retry(fn, opts) {
+    error     something failed
+
+Matching runs over the whole message, so a word five lines into a reply is
+found. Selecting a row puts the cursor on that message; `<Esc>` or `<C-c>`
+leaves the cursor alone. The optional argument narrows the rows: >
+
+    :DshSearch prompts
+    :DshSearch tools
+<
+`search.scope` sets the default for |:DshSearch| without an argument, and
+`keymaps.global.search` maps it, e.g. `{ search = "<leader>d/" }`.
+
+Telescope renders the picker when installed (its `defaults` and
+`layout_config` apply) and `vim.ui.select` otherwise, so telescope-ui-select,
+fzf-lua, snacks.nvim or a plain prompt all work. A session view is a scratch
+buffer with no file behind it, so there is no grep preview to show.
+
+Rows come from the buffer: the session view under the cursor is searched,
+else the session view in the current tab. Nothing is fetched from the server,
+so a session that is not open is not searched.
+
+==============================================================================
 TREE-SITTER                                                   *dsh-treesitter*
 
 The `dshchat` filetype has a bundled Tree-sitter grammar:
 `tree-sitter-dshchat/` contains `grammar.js` plus the committed generated
-`src/parser.c`, and `queries/dshchat/` contains `highlights.scm` and
-`folds.scm`. The grammar is line oriented: the first text line after a header
-is typed `user_prompt` or `assistant_message_header`, later message lines stay
-`text`, and each tool call groups its indented output.
+`src/parser.c`, and `queries/dshchat/` contains `highlights.scm`, `folds.scm`
+and `aerial.scm`. The grammar is line oriented: the first text line after a
+header is typed `user_prompt` or `assistant_message_header`, later message
+lines stay `text`, and each tool call groups its indented output.
 
 With nvim-treesitter installed the parser is registered automatically, so >
 
@@ -408,6 +566,64 @@ The renderer's extmarks still own the styling; Tree-sitter adds structure for
 folds over rendered code and tool-output blocks, incremental selection and
 `:InspectTree`, and its highlight captures reuse the same `Dsh…` groups.
 `treesitter = false` turns the wiring off.
+
+OUTLINE ~
+`lua/dsh/outline.lua` groups a transcript into turns and
+`lua/outline/providers/dshchat.lua` hands the tree to outline.nvim
+(https://github.com/hedyhli/outline.nvim):
+
+    Fix the flaky retry test            File
+      fix the flaky retry test          Namespace
+        I'll look at the retry loop.    Module
+        Commands outputs                Object
+          read(path=src/retry.ts)       Method
+          edit(path=src/retry.ts)       Method
+        The retry loop copies …         Module
+        ✖ something failed              Event
+
+Name the provider first in the priority list — a session buffer has no
+language server, but another provider picking it first would win: >
+
+    require("outline").setup({
+      providers = {
+        priority = { "dshchat", "lsp", "markdown", "treesitter" },
+      },
+    })
+<
+Entries are single lines of the transcript: the title, the first line of a
+prompt, the first line of a reply, every tool call (marker stripped) and the
+errors and notices the harness printed. A turn's tool calls are gathered
+under one `Commands outputs` entry, so the command noise of a long turn folds
+away with a single `<Tab>` instead of one per call.
+
+Folding is outline's own: `<Tab>` toggles a turn, a reply or the commands
+group, `h`/`l` fold/unfold, `W`/`E` fold/unfold everything. The default
+`symbol_folding.autofold_depth = 1` opens the tree folded to turn titles, so
+collapsing a prompt hides its replies and their commands;
+`autofold_depth = false` opens it expanded.
+
+`symbols.filter` selects by LSP symbol kind, not by transcript marker — the
+provider emits `File` (title), `Namespace` (prompt), `Module` (reply),
+`Object` (commands group), `Method` (tool call), `Event` (error) and
+`Constant` (notice).
+
+OUTLINE THROUGH AERIAL ~
+`queries/dshchat/aerial.scm` uses the aerial.nvim query format, so aerial.nvim
+shows the transcript, and outline.nvim's third-party
+outline-treesitter-provider.nvim can read it too. That path is flat — the
+grammar is line oriented, so no message node contains its tool calls — and the
+provider only accepts a buffer when `queries/<lang>/aerial.scm` resolves.
+Enable it in the outline setup: >
+
+    require("outline").setup({
+      providers = { priority = { "lsp", "markdown", "treesitter" } },
+    })
+<
+The outline lists the session title, both turn markers, the first line of
+every prompt and reply, every tool call, and the errors and notices the
+harness printed. Multi-line blocks (`code_block`, `tool_exchange`) stay out of
+it: an entry is labelled with the whole node text, so a block would render as
+several sidebar lines.
 
 ==============================================================================
 HOW IT WORKS                                                        *dsh-design*

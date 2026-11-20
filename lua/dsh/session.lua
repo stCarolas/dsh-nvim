@@ -220,12 +220,27 @@ function M.list(ctx)
 end
 
 --- Create (or reuse) a session rooted at `cwd`.
+--- @param ctx {url: string, cookie: string}
+--- @param cwd string|nil
+--- @param opts {agentPreset: string|nil}|nil Agent preset the Session composes
 --- @return table|nil {sessionId, agentPreset}
-function M.create(ctx, cwd)
+function M.create(ctx, cwd, opts)
+  local request = { cwd = cwd or vim.fn.getcwd() }
+  local preset = type(opts) == "table" and opts.agentPreset or nil
+  if type(preset) == "string" and preset ~= "" then
+    request.agentPreset = preset
+  end
   return http.rpc(ctx, "session/create", {
-    request = { cwd = cwd or vim.fn.getcwd() },
+    request = request,
   }, config.options.request_timeout)
 end
+
+--- DSH errors that mean the named Agent preset was rejected before any Session
+--- was created, so retrying without it cannot produce a second Session.
+local PRESET_ERRORS = {
+  ["agent-preset/not-found"] = true,
+  ["agent-preset/invalid"] = true,
+}
 
 --- DSH errors that mean `session/create` failed before it created anything, so
 --- retrying with a plain `cwd` cannot produce a second session.
@@ -236,6 +251,63 @@ local PRE_CREATION_ERRORS = {
   ["workspace/invalid-path"] = true,
   ["workspace/not-found"] = true,
 }
+
+--- Run one `session/create` request, applying an Agent preset when one is named.
+---
+--- DSH resolves the preset before it mints a Session, so a preset the
+--- deployment does not publish leaves nothing behind: the request is repeated
+--- without it and the fallback is reported as a warning naming the requested
+--- preset, plus the ids the deployment does publish when the error lists them.
+--- @param ctx {url: string, cookie: string}
+--- @param request table `cwd` or `workspaceId`
+--- @param preset string|nil
+--- @return table|nil value {sessionId, agentPreset}
+--- @return string|nil error
+--- @return string|nil warning set when the preset was dropped
+--- @return string|nil code
+--- @return table|nil details
+local function create_request(ctx, request, preset)
+  if type(preset) == "string" and preset ~= "" then
+    request.agentPreset = preset
+  end
+
+  local value, err, code, details = http.rpc(ctx, "session/create", {
+    request = request,
+  }, config.options.request_timeout)
+  if value then
+    return value, nil, nil, nil, nil
+  end
+
+  if type(preset) ~= "string" or preset == "" or not PRESET_ERRORS[code or ""] then
+    return nil, err, nil, code, details
+  end
+
+  local available = type(details) == "table" and details.available or nil
+  local suffix = ""
+  if type(available) == "table" and #available > 0 then
+    local ids = {}
+    for _, id in ipairs(available) do
+      if type(id) == "string" then
+        ids[#ids + 1] = id
+      end
+    end
+    if #ids > 0 then
+      suffix = (" (available: %s)"):format(table.concat(ids, ", "))
+    end
+  end
+  local warning = ("agent mode %q is not available%s; the session uses the deployment default"):format(preset, suffix)
+
+  request.agentPreset = nil
+  local retried, retried_err, retried_code, retried_details = http.rpc(ctx, "session/create", {
+    request = request,
+  }, config.options.request_timeout)
+  if retried then
+    return retried, nil, warning, nil, nil
+  end
+  -- Report the retry's failure, not the preset's: the caller decides where to
+  -- go from the error that actually stopped creation.
+  return nil, retried_err or err, warning, retried_code or code, retried_details or details
+end
 
 --- Create a session inside the Workspace for `cwd`, registering it if needed.
 ---
@@ -249,52 +321,59 @@ local PRE_CREATION_ERRORS = {
 --- a warning instead of creating a second one; a retry would leave an orphan.
 --- Only errors that provably happened before creation fall back to a plain
 --- `cwd` session, and a missing Workspace registry does too.
+---
+--- An Agent preset the deployment does not publish is not fatal either: DSH
+--- resolves the preset before it mints the Session, so `create_request` asks
+--- again without it and the fallback is reported as a warning (see
+--- `create_request`).
 --- @param ctx {url: string, cookie: string}
 --- @param cwd string|nil defaults to Neovim's current directory
+--- @param opts {agentPreset: string|nil}|nil Agent preset the Session composes
 --- @return table|nil {sessionId, agentPreset}
 --- @return string|nil error
 --- @return string|nil warning set when creation fell back to a plain cwd session
-function M.create_in_workspace(ctx, cwd)
+--- or to the deployment's default Agent preset
+function M.create_in_workspace(ctx, cwd, opts)
+  local preset = type(opts) == "table" and opts.agentPreset or nil
   local path = M.canonical_path(cwd)
   if not path then
-    return M.create(ctx, vim.fn.getcwd())
+    local value, err, warning = create_request(ctx, { cwd = vim.fn.getcwd() }, preset)
+    return value, err, warning
   end
 
   local project, workspace_err = workspace.ensure(ctx, path)
   if project then
-    local value, err, code, details = http.rpc(ctx, "session/create", {
-      request = { workspaceId = project.workspaceId },
-    }, config.options.request_timeout)
+    local value, err, warning, code, details = create_request(ctx, { workspaceId = project.workspaceId }, preset)
     if value then
-      return value, nil, nil
+      return value, nil, warning
     end
 
     if code == "session/workspace-attach-failed" then
       local created = type(details) == "table" and details.sessionId or nil
       if type(created) == "string" and created ~= "" then
-        return { sessionId = created },
-          nil,
-          ("session created but not attached to the workspace: %s"):format(err or code)
+        local notice = ("session created but not attached to the workspace: %s"):format(err or code)
+        return { sessionId = created }, nil, warning and (notice .. "; " .. warning) or notice
       end
       return nil, err or code
     end
 
     if PRE_CREATION_ERRORS[code or ""] then
-      local fallback, fallback_err = M.create(ctx, path)
+      local fallback, fallback_err, fallback_warning = create_request(ctx, { cwd = path }, preset)
       if fallback then
-        return fallback, nil, ("workspace attach failed: %s"):format(err or code)
+        local notice = ("workspace attach failed: %s"):format(err or code)
+        return fallback, nil, fallback_warning and (notice .. "; " .. fallback_warning) or notice
       end
       return nil, fallback_err or err
     end
 
     -- Unknown or transport-level failure: the session may already exist, so do
     -- not create another one. The error is reported instead.
-    return nil, err or "session/create failed"
+    return nil, err or warning or "session/create failed"
   end
 
-  local value, err = M.create(ctx, path)
+  local value, err, warning = create_request(ctx, { cwd = path }, preset)
   if value then
-    return value, nil, workspace_err
+    return value, nil, warning or workspace_err
   end
   return nil, err or workspace_err
 end

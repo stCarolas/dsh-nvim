@@ -276,6 +276,66 @@ check("empty scope message names the directory", notified[1] and notified[1]:fin
 check("empty scope does not create a session", #calls_to("session/create") == 0)
 
 --------------------------------------------------------------------------------
+-- 6b. A selected Workspace overrides scoping and new-session creation, without
+-- changing Neovim's own cwd.
+--------------------------------------------------------------------------------
+local other = tmp .. "/other"
+vim.fn.mkdir(other, "p")
+local canonical_other = session.canonical_path(other)
+table.insert(list_items, { sessionId = "session-dddddddd", updatedAt = 4, cwd = other })
+
+handlers["session/list"] = function()
+  return { items = vim.deepcopy(list_items) }
+end
+workspace.select({ workspaceId = "ws-other", path = other, title = "Other project" })
+config.setup({ notifications = false, sessions = { scope = "all", order = "oldest" } })
+
+local choices_before = #picker_choices
+local prompts_before = #picker_prompts
+chat.pick()
+check(
+  "selected workspace overrides scope=all",
+  picker_choices[choices_before + 1] and #picker_choices[choices_before + 1] == 1,
+  tostring(picker_choices[choices_before + 1] and #picker_choices[choices_before + 1])
+)
+check(
+  "selected workspace prompt names the workspace",
+  picker_prompts[prompts_before + 1] and picker_prompts[prompts_before + 1]:find("Other project", 1, true) ~= nil,
+  tostring(picker_prompts[prompts_before + 1])
+)
+
+handlers["workspace/create"] = function(args)
+  check("new session resolves the selected workspace", args.request.path == canonical_other, tostring(args.request.path))
+  return {
+    workspace = { workspaceId = "ws-other", path = canonical_other, sessionIds = {} },
+    created = false,
+  }
+end
+handlers["session/create"] = function(args)
+  check("new session joins the selected workspace", args.request.workspaceId == "ws-other", vim.inspect(args.request))
+  return { sessionId = "session-other" }
+end
+
+reset_calls()
+chat.new_session()
+check("new session uses the selected workspace", #calls_to("session/create") == 1, tostring(#calls_to("session/create")))
+check("new session opens a view", chat.is_open("session-other"))
+chat.close("session-other")
+handlers["session/create"] = function()
+  return { sessionId = "session-after-workspace" }
+end
+
+workspace.clear_selection()
+config.setup({ notifications = false, sessions = { scope = "cwd", order = "oldest" } })
+local restored_before = #picker_choices
+chat.pick()
+check(
+  "clearing the workspace restores cwd scoping",
+  picker_choices[restored_before + 1] and #picker_choices[restored_before + 1] == 2,
+  tostring(picker_choices[restored_before + 1] and #picker_choices[restored_before + 1])
+)
+
+--------------------------------------------------------------------------------
 -- 7. Malformed server data is rejected instead of raising.
 --------------------------------------------------------------------------------
 handlers["workspace/create"] = function()

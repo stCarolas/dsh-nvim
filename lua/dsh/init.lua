@@ -19,8 +19,23 @@ function M.setup(opts)
     menu = function()
       M.menu()
     end,
+    model = function()
+      M.model()
+    end,
+    mode = function()
+      M.mode()
+    end,
+    workspace = function()
+      M.workspace()
+    end,
+    search = function()
+      M.search()
+    end,
     new_session = function()
       M.new_session()
+    end,
+    quick_chat = function()
+      M.quick_chat()
     end,
     next_chat = function()
       M.next_chat()
@@ -54,18 +69,28 @@ function M.open(session_id)
   require("dsh.ui.chat").open(session_id)
 end
 
---- Create a session in the current directory's workspace and open it.
---- @param opts {prompt: boolean|nil}|nil
+--- Create a session in the selected workspace (or this directory's) and open it.
+--- @param opts {prompt: boolean|table|nil, mode: string|nil, layout: table|nil}|nil
 function M.new_session(opts)
   require("dsh.ui.chat").new_session(opts)
 end
 
---- Switch to the next open session view, or start a new chat.
+--- Start a quick chat: new session, session view in one split, prompt in
+--- another, prefilled with the Visual selection that was active.
 ---
+--- The Agent mode comes from `quick_chat.mode` (or `opts.mode`), the view from
+--- `quick_chat.chat` and the prompt from `quick_chat.prompt`. `:DshQuickChat`
+--- is the command; this is the Lua entry point for mappings.
+--- @param opts {mode: string|nil}|nil Agent preset id for this call
+function M.quick_chat(opts)
+  require("dsh.ui.quick_chat").open(opts)
+end
+
+--- Switch to the next open session view, or start a new chat.
 --- Views are ordered by buffer number (the order they were opened) and the
 --- next one is focused, wrapping around. From a buffer that is not a session
---- view this starts a new session in this directory's workspace, opens it
---- where `chat.open_in` says and opens its prompt.
+--- view this starts a new session in the selected workspace (or this
+--- directory's), opens it where `chat.open_in` says and opens its prompt.
 function M.next_chat()
   require("dsh.ui.chat").next_chat()
 end
@@ -78,6 +103,53 @@ end
 --- Open the nested DSH menu: new session, open session, skills and commands.
 function M.menu()
   require("dsh.ui.menu").open()
+end
+
+--- Pick the model of the current (or chosen) session.
+---
+--- Reads `session/modelCatalog` and applies the choice with
+--- `session/selectModel`, so the switch is session-local and the server also
+--- saves it as the default for later sessions.
+function M.model()
+  require("dsh.ui.agent").model()
+end
+
+--- Pick an Agent mode (preset) with `vim.ui.select`.
+---
+--- On a blank session the choice applies to that session
+--- (`agentPresets/select`). On a session that has already started, or when no
+--- session view is open, the choice changes the preset new sessions compose
+--- (`settings/update` on the `agent-preset-registry` namespace).
+function M.mode()
+  require("dsh.ui.agent").mode()
+end
+
+--- Pick the Workspace that scopes session pickers and `:DshNew`.
+---
+--- The selection is client-side: Neovim's own working directory never
+--- changes. Session pickers then list the chosen Workspace's Sessions, and
+--- `:DshNew` creates its Session there.
+function M.workspace()
+  require("dsh.ui.workspace").pick()
+end
+
+--- Return the plugin's session scope to Neovim's current directory.
+function M.clear_workspace()
+  require("dsh.ui.workspace").reset()
+end
+
+--- Search the session transcript: prompts, replies, tool calls and notices.
+---
+--- Rows come from the rendered buffer, so the picker matches the text you see
+--- and a selection moves the cursor to that message. Telescope renders it when
+--- installed, `vim.ui.select` otherwise. `scope` narrows the rows to "prompts",
+--- "replies", "tools" or "notes"; the default comes from `search.scope`.
+--- @param opts {scope: string|nil}|string|nil scope name, or options
+function M.search(opts)
+  if type(opts) == "string" then
+    opts = { scope = opts }
+  end
+  require("dsh.ui.search").open(opts)
 end
 
 --- Send a prompt to the session of the current buffer.
