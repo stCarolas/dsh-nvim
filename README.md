@@ -96,7 +96,7 @@ With `lazy.nvim`:
 
 ```lua
 {
-  "you/dsh-nvim",
+  "stCarolas/dsh-nvim",
   config = function()
     require("dsh").setup({
       chat = { open_in = "tab" },   -- one tab page per session (default: "split")
