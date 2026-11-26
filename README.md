@@ -30,9 +30,13 @@ syntax-highlighted with treesitter when that language's parser is installed, and
 languages appear as virtual text (never in the buffer contents). Tool results are kept
 verbatim as a code block tabulated one level under the call (`DshCodeBlock`), truncated to
 `tool_output_lines` rows with the remainder counted — failed output keeps its error highlight.
-Prompts you type are echoed verbatim, so Markdown in your own text is left alone. When the
-agent needs a decision, the plugin asks through `vim.ui.select` / `vim.ui.input`, so your
-picker plugin handles it.
+When a transcript gets long, `:DshOutputToggle` collapses every tool result to one
+`… N lines hidden` line: the `⚙` call lines stay, so you still see what ran, and a failed result
+keeps its output so a failure cannot be hidden by accident. `:DshToolsToggle` goes a step
+further and hides the whole tool exchange — call line and output — leaving one
+`⚙ N tool calls hidden` summary per run, which still counts failed calls. Prompts you type are
+echoed verbatim, so Markdown in your own text is left alone. When the agent needs a decision,
+the plugin asks through `vim.ui.select` / `vim.ui.input`, so your picker plugin handles it.
 
 ## Requirements
 
@@ -122,6 +126,8 @@ Or manually, then `:helptags doc` and `:help dsh`.
 | `:DshSearch [scope]` | list the session buffer's messages (prompts, replies, tool calls, notes) and jump to one |
 | `:DshPrompt` | prompt for the current session |
 | `:DshRefresh` | re-open the stream and re-read history |
+| `:DshOutputToggle` | collapse or restore the tool output of the session buffer (per view) |
+| `:DshToolsToggle` | hide or show whole tool exchanges — call lines and their output (per view) |
 | `:DshCancel` | cancel the running turn (quiet form of `:DshInterrupt`) |
 | `:DshInterrupt` | interrupt the running turn of the session in view, from any buffer |
 | `:DshClose` | close the session view |
@@ -281,6 +287,10 @@ a picker changes nothing.
 | `<localleader>s` | pick another session |
 | `<C-c>` | cancel the running turn |
 | `q` | close the view |
+
+`keymaps.output` and `keymaps.tools` are unmapped by default; set them — e.g.
+`output = "<localleader>o"`, `tools = "<localleader>t"` — to toggle tool output or whole tool
+exchanges from the session buffer without the commands.
 
 In the floating prompt popup: `<C-s>` sends, `<CR>` sends (normal mode), and `<Esc>` or `q`
 cancels. Enter inserts newlines in insert mode, so multi-line prompts work.
@@ -469,6 +479,8 @@ require("dsh").setup({
     include_archived = false, -- true => list deleted/archived sessions too
   },
   tool_output_lines = 8,      -- tool output rows shown as a code block
+  show_tool_exchange = true,  -- show whole tool exchanges (call line + output)
+  show_tool_output = true,    -- start views with tool result bodies shown
   stream = {
     enabled = true,           -- false => read history once per open/refresh over HTTP
     render_interval = 60,     -- coalesce chunks into at most one render per N ms
@@ -528,6 +540,17 @@ winbar keeps showing the session title while the session is idle.
 The winbar reads `dsh · <title> · <status>`. While a turn runs (`streaming`), it replaces the
 title with the newest assistant message, clipped to the window width; when the turn settles
 (`idle`) the title returns. The buffer name keeps the session title in both states.
+
+`show_tool_output` and `show_tool_exchange` set what a session view starts with: tool result
+bodies shown, and whole tool exchanges shown (both the default). The two toggles are
+independent and per view: `:DshOutputToggle` collapses result bodies to a `… N lines hidden`
+marker while keeping the `⚙` call lines, and `:DshToolsToggle` hides the call line too, leaving
+one `⚙ N tool calls hidden` summary per run of calls (with `, N failed` appended when a result
+in the run failed, highlighted as an error). Hiding exchanges leaves the output state alone, so
+showing them again reveals the detail that view was left at. `:DshRefresh` and stream updates
+re-render with both states; a view whose tool display is collapsed says so in the winbar
+(`dsh · <title> · <status> · output hidden` or `· tools hidden`; the coarser one wins).
+`tool_output_lines` still caps how many rows a visible result shows.
 
 `prompt.open_in = "split"` puts prompt entry in a separate window backed by a
 `dsh://prompt/<n>` scratch buffer (`filetype=dsh-prompt`, so a `FileType` autocmd can add
@@ -698,6 +721,8 @@ nvim --headless -l scripts/interrupt_spec.lua     # :DshInterrupt resolution and
 nvim --headless -l scripts/server_spec.lua        # attach/shared server discovery, with stubbed transports
 nvim --headless -l scripts/treesitter_spec.lua    # dshchat grammar, queries and wiring
 nvim --headless -l scripts/search_spec.lua        # transcript search rows and scopes
+nvim --headless -l scripts/output_spec.lua        # tool-output toggle: rendering, per-view state, command
+nvim --headless -l scripts/tools_spec.lua         # tool-exchange toggle, its run summaries and the output toggle
 nvim --headless -l scripts/ws_spec.lua            # WebSocket transport: handshake, streams, heartbeat
 nvim --headless -l scripts/smoke.lua              # boots dsh web and drives the full UI path
 ```

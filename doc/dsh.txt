@@ -59,6 +59,19 @@ COMMANDS                                                        *dsh-commands*
                         one. `scope` is "all" (default), "prompts",
                         "replies", "tools" or "notes". See |dsh-search|.
 :DshRefresh             Re-open the stream and re-read history.
+:DshOutputToggle        Show or hide the tool output of the session buffer.
+                        The `  ⚙ name(args)` call lines stay; each result
+                        body collapses to one "… N lines hidden" marker, and
+                        a failed result keeps its output. The state is per
+                        view and starts from `show_tool_output`; see
+                        |dsh-output|.
+:DshToolsToggle         Show or hide whole tool exchanges — the
+                        `  ⚙ name(args)` call line and its output — in the
+                        session buffer, so it reads as the conversation
+                        alone. A run of calls collapses to one "⚙ N tool
+                        calls hidden" line that still counts failed results.
+                        The state is per view and starts from
+                        `show_tool_exchange`; see |dsh-tools|.
 :DshCancel              Cancel the running turn; like |:DshInterrupt| but quiet.
 :DshInterrupt           Interrupt the running turn of the session in view.
                         Works from a prompt window, a code buffer or another
@@ -168,6 +181,11 @@ Buffer-local, inside a DSH chat buffer:
     <C-c>                   Cancel the running turn
     q                       Close the view
 
+`keymaps.output` is unmapped by default; set it — e.g.
+`output = "<localleader>o"` — to toggle tool output (|:DshOutputToggle|)
+from the buffer. `keymaps.tools` does the same for whole tool exchanges
+(|:DshToolsToggle|), e.g. `tools = "<localleader>t"`. See |dsh-tools|.
+
 In the floating prompt popup:
 
     <C-s>                   Send (normal and insert mode)
@@ -193,7 +211,10 @@ Global keymaps can be configured with `keymaps.global`; see |dsh-config|.
 stopped from a prompt window or any other buffer. `keymaps.global.next_chat`
 maps |:DshNextChat|, and `keymaps.global.quick_chat` maps |:DshQuickChat|.
 `keymaps.global.model`, `keymaps.global.mode` and `keymaps.global.workspace`
-map |:DshModel|, |:DshMode| and |:DshWorkspace|.
+map |:DshModel|, |:DshMode| and |:DshWorkspace|. `keymaps.global.output` and
+`keymaps.global.tools` map |:DshOutputToggle| and |:DshToolsToggle|, which
+act on the view at the cursor or the most recently used one, so the toggles
+are reachable from a prompt window, a code buffer or another tab.
 
 ==============================================================================
 STATUS API                                                    *dsh-status-api*
@@ -359,6 +380,8 @@ All keys are optional; defaults shown. >lua
         include_archived = false, -- true => include deleted sessions
       },
       tool_output_lines = 8,    -- tool output rows shown as a code block
+      show_tool_exchange = true, -- start views with tool exchanges shown
+      show_tool_output = true,  -- start views with tool result bodies shown
       stream = {
         enabled = true,         -- false => read history once over HTTP
         render_interval = 60,
@@ -407,12 +430,16 @@ All keys are optional; defaults shown. >lua
       keymaps = {
         prompt = "<CR>", refresh = "R", cancel = "<C-c>",
         sessions = "<localleader>s", close = "q",
+        output = "",            -- e.g. "<localleader>o": toggle tool output
+        tools = "",             -- e.g. "<localleader>t": toggle tool calls
         global = {},            -- e.g. { new_session = "<leader>dn",
                                 --        next_chat = "<leader>dx",
                                 --        interrupt = "<leader>di",
                                 --        model = "<leader>dm",
                                 --        mode = "<leader>dc",
-                                --        workspace = "<leader>dw" }
+                                --        workspace = "<leader>dw",
+                                --        output = "<leader>do",
+                                --        tools = "<leader>dt" }
       },
       notifications = true,
     })
@@ -433,6 +460,13 @@ The winbar reads `dsh · <title> · <status>`. While a turn runs ("streaming"),
 it replaces the title with the newest assistant message, clipped to the window
 width; when the turn settles ("idle") the title returns. The buffer name keeps
 the session title in both states.
+
+`show_tool_output` sets what a new session view starts with: tool result
+bodies shown (the default), or collapsed to one marker line per call. It is
+the initial state of |:DshOutputToggle|, which then changes that view only.
+`show_tool_exchange` does the same for whole tool exchanges — the call line
+and its result — and is the initial state of |:DshToolsToggle|. See
+|dsh-tools|.
 
 `prompt.open_in` selects where a prompt is typed: "float" (default) opens the
 centered popup, "split" opens a scratch buffer in its own window, which is
@@ -499,7 +533,8 @@ Rendered:
 - tool results: kept verbatim as a code block tabulated one level under the
   `  ⚙ name(args)` call line (four spaces, |hl-DshCodeBlock|; a failed result
   keeps `DshToolError`), truncated to `tool_output_lines` rows, with the rest
-  counted on a final line.
+  counted on a final line. |:DshOutputToggle| collapses these bodies and
+  |:DshToolsToggle| folds the whole exchange; see |dsh-tools|.
 
 Not rendered: tables are shown as source text, and `_italic_` is left alone so
 snake_case identifiers survive.
@@ -510,6 +545,57 @@ Highlight groups are created with `default = true`, so any colourscheme or
 |hl-DshCodeLang|, |hl-DshLink|, |hl-DshQuote|, |hl-DshBullet|, |hl-DshHr|.
 
 Set `markdown.enabled = false` to show the raw source instead.
+
+==============================================================================
+TOOL DISPLAY                                          *dsh-output* *dsh-tools*
+
+Tool calls render as a `  ⚙ name(args)` line with the call's result as an
+indented code block under it (see |dsh-markdown|). Such an exchange — the call
+line and its output — can be folded away in two steps, each toggled per view:
+
+|:DshOutputToggle| (or `keymaps.output`, once mapped) keeps the call line and
+folds the result body: >
+
+      ⚙ read(path=src/retry.ts)
+        … 43 lines hidden
+<
+|:DshToolsToggle| (or `keymaps.tools`) is one level coarser and folds the call
+line away with it, so the view reads as the conversation alone: >
+
+      ⚙ 3 tool calls hidden, 1 failed
+<
+One muted line remembers how much is folded away. Toggling either again
+restores the lines from the entries the view already holds; nothing is
+fetched again.
+
+|:DshOutputToggle| never collapses a failed result: its output, and its
+`DshToolError` highlight, stay, because hiding a failure would hide why a
+turn went wrong. A result with no output keeps its `(empty)` marker.
+
+|:DshToolsToggle| folds failures too, but admits them: a run of hidden calls
+appends ", N failed" to its summary and renders that line in `DshToolError`,
+so a failure stays noticeable without the transcript it came with. The two
+states are independent: hiding exchanges leaves the output state untouched,
+so showing the exchanges again reveals the detail that view was left at
+(call lines with collapsed output, for example).
+
+Both states belong to the view, not to the session or the server: two session
+views can disagree, and |:DshRefresh|, stream updates and retitles keep the
+view as you left it. `show_tool_output` and `show_tool_exchange` set what a
+new view starts with, so closing a view and opening it again returns to those
+options. The winbar says which state is collapsed, as in
+`dsh · <title> · <status> · output hidden` or `… · tools hidden`; when both
+are collapsed the coarser marker wins.
+
+Both toggles work from a prompt window or another tab too: like
+|:DshInterrupt|, the session view under the cursor wins, then the most
+recently used open view, and the change is reported with a notification.
+
+The tool lines stay part of the buffer syntax either way, so |:DshSearch|
+keeps listing each call — with its output when shown, with the hidden marker
+when its body is collapsed, and as one "tool calls hidden" entry when whole
+exchanges are folded. Folding an exchange also folds its failed result, which
+is why the summary counts failures.
 
 ==============================================================================
 SEARCH                                                            *dsh-search*

@@ -72,6 +72,14 @@ vim.api.nvim_create_user_command("DshRefresh", function()
   dsh().refresh()
 end, { desc = "DSH: refresh the current session history" })
 
+vim.api.nvim_create_user_command("DshOutputToggle", function()
+  dsh().toggle_output()
+end, { desc = "DSH: show or hide tool output in the session buffer" })
+
+vim.api.nvim_create_user_command("DshToolsToggle", function()
+  dsh().toggle_tools()
+end, { desc = "DSH: show or hide whole tool exchanges (calls and output)" })
+
 vim.api.nvim_create_user_command("DshCancel", function()
   dsh().cancel()
 end, { desc = "DSH: cancel the running turn" })

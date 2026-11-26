@@ -59,6 +59,20 @@ M.defaults = {
   --- Longest tool output shown as a code block, in rows.
   tool_output_lines = 8,
 
+  --- Start session views with whole tool exchanges shown: the
+  --- `  ⚙ name(args)` call line and the result under it. `:DshToolsToggle`
+  --- flips it per view: a hidden run of calls collapses to one summary line
+  --- ("⚙ 3 tool calls hidden") that still counts failed results, so a failure
+  --- does not disappear silently.
+  show_tool_exchange = true,
+
+  --- Start session views with tool output visible. The `  ⚙ name(args)` call
+  --- lines are always shown; this is about the result bodies under them.
+  --- `:DshOutputToggle` (or `keymaps.output`) flips the state of one view: a
+  --- hidden result collapses to one "… N lines hidden" marker, and a failed
+  --- result keeps its output so a failure cannot be hidden by mistake.
+  show_tool_output = true,
+
   --- Live updates over the DSH WebSocket stream.
   stream = {
     --- Use `session/follow` for live history and token streaming.
@@ -159,6 +173,12 @@ M.defaults = {
     cancel = "<C-c>",
     sessions = "<localleader>s",
     close = "q",
+    --- Show or hide tool output in this view. Unmapped by default; set it to
+    --- e.g. "<localleader>o" for the same toggle as `:DshOutputToggle`.
+    output = "",
+    --- Show or hide whole tool exchanges (calls and their output) in this
+    --- view. Unmapped by default; e.g. "<localleader>t" for `:DshToolsToggle`.
+    tools = "",
 
     --- Optional global mappings, e.g.
     --- { new_session = "<leader>dn", pick = "<leader>ds",

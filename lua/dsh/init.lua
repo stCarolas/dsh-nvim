@@ -52,6 +52,12 @@ function M.setup(opts)
     interrupt = function()
       M.interrupt()
     end,
+    output = function()
+      M.toggle_output()
+    end,
+    tools = function()
+      M.toggle_tools()
+    end,
   }
   for action, lhs in pairs(global) do
     local callback = actions[action]
@@ -160,6 +166,34 @@ end
 --- Re-read the current session's history.
 function M.refresh()
   require("dsh.ui.chat").refresh()
+end
+
+--- Show or hide the tool output of the session view.
+---
+--- The `  ⚙ name(args)` call lines stay; the result body under each of them
+--- collapses to one "… N lines hidden" marker, and a failed result keeps its
+--- output so a failure stays visible. Each view carries its own state, it
+--- starts from `show_tool_output`, and it lasts as long as the view. The
+--- command is `:DshOutputToggle`; `keymaps.output` maps it inside the session
+--- buffer. Like `:DshInterrupt`, the view at the cursor wins and the most
+--- recently used open view comes next, so it works from a prompt window too.
+--- @return boolean|nil shown the new state, nil when no view is open
+function M.toggle_output()
+  return require("dsh.ui.chat").toggle_output()
+end
+
+--- Show or hide whole tool exchanges in the session view.
+---
+--- The `  ⚙ name(args)` call line goes with its result, so the view reads as
+--- the conversation alone. A run of calls collapses to one "⚙ N tool calls
+--- hidden" summary line, which also counts failed results so a failure stays
+--- noticeable. Per view, starting from `show_tool_exchange`. The command is
+--- `:DshToolsToggle`; `keymaps.tools` maps it inside the session buffer. Like
+--- `:DshOutputToggle` it resolves the view at the cursor, then the most
+--- recently used open view.
+--- @return boolean|nil shown the new state, nil when no view is open
+function M.toggle_tools()
+  return require("dsh.ui.chat").toggle_tools()
 end
 
 --- Cancel the running turn in the current (or most recently used) session.

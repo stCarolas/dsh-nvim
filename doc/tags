@@ -5,11 +5,13 @@ dsh-keymaps	dsh.txt	/*dsh-keymaps*
 dsh-markdown	dsh.txt	/*dsh-markdown*
 dsh-menu	dsh.txt	/*dsh-menu*
 dsh-model-mode	dsh.txt	/*dsh-model-mode*
+dsh-output	dsh.txt	/*dsh-output*
 dsh-questions	dsh.txt	/*dsh-questions*
 dsh-quick-chat	dsh.txt	/*dsh-quick-chat*
 dsh-search	dsh.txt	/*dsh-search*
 dsh-shared	dsh.txt	/*dsh-shared*
 dsh-status-api	dsh.txt	/*dsh-status-api*
+dsh-tools	dsh.txt	/*dsh-tools*
 dsh-treesitter	dsh.txt	/*dsh-treesitter*
 dsh-troubleshoot	dsh.txt	/*dsh-troubleshoot*
 dsh-workspace	dsh.txt	/*dsh-workspace*

@@ -80,15 +80,28 @@ local function update_name(entry)
   end
 end
 
+--- Render options for one view: tool display is per-view state, so every
+--- render of the view passes the state the toggles left it in.
+--- @param entry table
+--- @return {show_tool_output: boolean, show_tool_exchange: boolean}
+local function view_opts(entry)
+  return {
+    show_tool_output = entry.show_tool_output ~= false,
+    show_tool_exchange = entry.show_tool_exchange ~= false,
+  }
+end
+
 --- Clip a streaming preview so the whole winbar fits the window.
 ---
---- `render.winbar` spends 20 cells on the ` dsh · ` prefix and ` · streaming `
---- suffix; the remaining cells belong to the preview.
+--- `chrome` is the display width of what the winbar shows around the preview —
+--- the ` dsh · ` prefix, title, status and the tool-output marker — in cells;
+--- the remaining cells belong to the preview.
 --- @param text string
 --- @param width integer
+--- @param chrome integer cells spent outside the preview
 --- @return string
-local function fit_winbar(text, width)
-  local budget = width - 20
+local function fit_winbar(text, width, chrome)
+  local budget = width - chrome
   if budget < 8 then
     budget = 8
   end
@@ -111,17 +124,21 @@ end
 
 local function update_winbar(entry)
   if entry.win and vim.api.nvim_win_is_valid(entry.win) then
+    local opts = view_opts(entry)
     local preview
     if entry.status == "streaming" then
       preview = render.last_assistant(entry.entries)
       if preview then
-        preview = fit_winbar(preview, vim.api.nvim_win_get_width(entry.win))
+        -- Measure the winbar without its preview rather than assuming fixed
+        -- chrome: the status and the tool-output marker both move the budget.
+        local chrome = vim.fn.strdisplaywidth(render.winbar(entry.title, entry.status, nil, opts))
+        preview = fit_winbar(preview, vim.api.nvim_win_get_width(entry.win), chrome)
       end
     end
     -- `'winbar'` is a statusline expression; a rejected assignment must not
     -- abort a stream update, so keep the failure local.
     pcall(function()
-      vim.wo[entry.win].winbar = render.winbar(entry.title, entry.status, preview)
+      vim.wo[entry.win].winbar = render.winbar(entry.title, entry.status, preview, opts)
     end)
   end
 end
@@ -143,7 +160,7 @@ local function apply(entry, follow_state)
   if follow_state.status then
     entry.status = follow_state.status
   end
-  render.render(entry.buf, entry.entries, entry.win)
+  render.render(entry.buf, entry.entries, entry.win, view_opts(entry))
   update_name(entry)
   update_winbar(entry)
 end
@@ -207,7 +224,7 @@ local function load_once(ctx, session_id)
   entry.entries = built.entries
   entry.title = built.title or entry.title
   entry.status = item and item.running and "running" or "idle"
-  render.render(entry.buf, entry.entries, entry.win)
+  render.render(entry.buf, entry.entries, entry.win, view_opts(entry))
   update_name(entry)
   update_winbar(entry)
 end
@@ -290,6 +307,12 @@ local function ensure_buffer(session_id, title)
   if entry and vim.api.nvim_buf_is_valid(entry.buf) then
     entry.session_id = session_id
     entry.title = entry.title or title
+    if entry.show_tool_output == nil then
+      entry.show_tool_output = config.options.show_tool_output ~= false
+    end
+    if entry.show_tool_exchange == nil then
+      entry.show_tool_exchange = config.options.show_tool_exchange ~= false
+    end
     update_name(entry)
     update_winbar(entry)
     if config.options.treesitter then
@@ -315,6 +338,10 @@ local function ensure_buffer(session_id, title)
   entry.entries = entry.entries or {}
   entry.status = entry.status or "connecting"
   entry.title = entry.title or title
+  -- A fresh buffer starts from the config; the toggles change it from here
+  -- on, for this view only.
+  entry.show_tool_output = config.options.show_tool_output ~= false
+  entry.show_tool_exchange = config.options.show_tool_exchange ~= false
   state.sessions[session_id] = entry
   update_name(entry)
 
@@ -442,7 +469,7 @@ local function show(entry, layout)
   vim.wo[entry.win].number = false
   vim.wo[entry.win].relativenumber = false
   update_winbar(entry)
-  render.render(entry.buf, entry.entries, entry.win)
+  render.render(entry.buf, entry.entries, entry.win, view_opts(entry))
 end
 
 local function attach_keymaps(session_id)
@@ -467,6 +494,12 @@ local function attach_keymaps(session_id)
   map(keys.refresh, function()
     M.refresh(session_id)
   end, "DSH: refresh history")
+  map(keys.output, function()
+    M.toggle_output(session_id)
+  end, "DSH: show or hide tool output")
+  map(keys.tools, function()
+    M.toggle_tools(session_id)
+  end, "DSH: show or hide tool calls and output")
   map(keys.sessions, function()
     M.pick()
   end, "DSH: pick session")
@@ -721,6 +754,70 @@ function M.refresh(session_id)
   end
   entry.reconnect_attempts = 0
   attach(session_id)
+end
+
+--- Flip one tool-display flag of a session view and re-render it.
+---
+--- Like `:DshInterrupt` this resolves the view at the cursor first and the
+--- most recently used open view second, so it also works from a prompt window,
+--- a code buffer or another tab. With no view open it says so instead of
+--- failing silently.
+--- @param session_id string|nil explicit target
+--- @param field string entry field holding the boolean
+--- @param label string what the notice calls the hidden thing
+--- @return boolean|nil shown the new state, or nil when no view was found
+local function toggle_view(session_id, field, label)
+  session_id = session_id or M.current() or M.recent_view()
+  if not session_id then
+    notify("no open DSH session; open one with :Dsh", vim.log.levels.WARN)
+    return nil
+  end
+
+  local entry = state.sessions[session_id]
+  if not entry or entry.closed then
+    return nil
+  end
+
+  local shown = entry[field] ~= false
+  entry[field] = not shown
+  render.render(entry.buf, entry.entries, entry.win, view_opts(entry))
+  update_winbar(entry)
+  notify(("%s %s"):format(label, shown and "hidden" or "shown"))
+  return entry[field]
+end
+
+--- Show or hide the tool output of one session view.
+---
+--- The `  ⚙ name(args)` call lines stay; what collapses is the result body
+--- under them, to one "… N lines hidden" marker. A failed result keeps its
+--- output: hiding a failure would make it easy to miss. The state belongs to
+--- the view (each view toggles on its own), starts from `show_tool_output` and
+--- lasts as long as the view does.
+---
+--- `:DshOutputToggle` is the command; `keymaps.output` maps it inside the
+--- session buffer.
+--- @param session_id string|nil defaults to the current or most recent view
+--- @return boolean|nil shown the new state, or nil when no view was found
+function M.toggle_output(session_id)
+  return toggle_view(session_id, "show_tool_output", "tool output")
+end
+
+--- Show or hide the whole tool exchange of one session view.
+---
+--- Hiding drops the `  ⚙ name(args)` call line too, so the view reads as the
+--- conversation alone. A run of calls collapses to one summary line —
+--- "⚙ 3 tool calls hidden" — which also counts failed results ("…, 1 failed")
+--- so a failure stays noticeable without its transcript. The state is per
+--- view, starts from `show_tool_exchange` and lasts as long as the view does.
+---
+--- The two toggles are independent: hiding exchanges leaves the output toggle
+--- where it was, and showing exchanges again reveals whatever detail the view
+--- was left at. `:DshToolsToggle` is the command; `keymaps.tools` maps it
+--- inside the session buffer.
+--- @param session_id string|nil defaults to the current or most recent view
+--- @return boolean|nil shown the new state, or nil when no view was found
+function M.toggle_tools(session_id)
+  return toggle_view(session_id, "show_tool_exchange", "tools")
 end
 
 --- Ask DSH to stop one session's running turn.

@@ -18,6 +18,82 @@ local SPAN_PRIORITY = 4100
 --- level, and it aligns the code with the tool name after the call prefix.
 local TOOL_CODE_INDENT = "    "
 
+--- Winbar suffix shown while tool output or whole exchanges are toggled off.
+local HIDDEN_TOOL_OUTPUT = " · output hidden"
+local HIDDEN_TOOL_EXCHANGE = " · tools hidden"
+
+--- Whether tool result bodies are rendered.
+---
+--- A caller passes the state of its view; without one the `show_tool_output`
+--- config option decides, so a path that does not know about the toggle still
+--- honours the user's setting.
+--- @param opts {show_tool_output: boolean|nil, show_tool_exchange: boolean|nil}|nil
+--- @return boolean
+local function tool_output_shown(opts)
+  if type(opts) == "table" and type(opts.show_tool_output) == "boolean" then
+    return opts.show_tool_output
+  end
+  return config.options.show_tool_output ~= false
+end
+
+--- Whether whole tool exchanges — the call line and its result — are rendered.
+--- @param opts {show_tool_output: boolean|nil, show_tool_exchange: boolean|nil}|nil
+--- @return boolean
+local function tool_exchange_shown(opts)
+  if type(opts) == "table" and type(opts.show_tool_exchange) == "boolean" then
+    return opts.show_tool_exchange
+  end
+  return config.options.show_tool_exchange ~= false
+end
+
+--- Replace each run of tool entries with one summary entry.
+---
+--- Tool calls and their results are separate entries, and a step can issue
+--- several calls before the results arrive, so the run — not one call — is the
+--- unit to collapse: the buffer keeps a single line saying how much work is
+--- folded away, and a failure is counted there instead of disappearing.
+--- @param entries table[]
+--- @return table[]
+local function collapse_tool_runs(entries)
+  local out = {}
+  local calls, results, failures = 0, 0, 0
+
+  local function flush()
+    if calls == 0 and results == 0 then
+      return
+    end
+    out[#out + 1] = { role = "tool_summary", calls = calls, results = results, failures = failures }
+    calls, results, failures = 0, 0, 0
+  end
+
+  for _, entry in ipairs(entries) do
+    if entry.role == "tool" then
+      calls = calls + 1
+    elseif entry.role == "tool_result" then
+      results = results + 1
+      if entry.is_error then
+        failures = failures + 1
+      end
+    else
+      flush()
+      out[#out + 1] = entry
+    end
+  end
+  flush()
+
+  return out
+end
+
+--- One-line stand-in for a tool result whose body is toggled off.
+--- @param count integer output rows the result had
+--- @return string
+local function hidden_notice(count)
+  if count == 0 then
+    return "(empty)"
+  end
+  return ("… %d line%s hidden"):format(count, count == 1 and "" or "s")
+end
+
 --- Default highlight groups.
 function M.define_highlights()
   local groups = {
@@ -97,9 +173,14 @@ end
 
 --- Render entries into lines, per-line highlight groups, and styled spans.
 --- @param entries table[]
+--- @param opts {show_tool_output: boolean|nil, show_tool_exchange: boolean|nil}|nil
 --- @return {lines: string[], hl: string[], spans: table[], virt: table[]}
-function M.compose(entries)
+function M.compose(entries, opts)
   local state = { lines = {}, hl = {}, spans = {}, virt = {} }
+  local show_tool_output = tool_output_shown(opts)
+  if not tool_exchange_shown(opts) then
+    entries = collapse_tool_runs(entries)
+  end
 
   --- Append one line and return its row.
   function state.push(text, group)
@@ -177,18 +258,40 @@ function M.compose(entries)
       -- level under the call and grouped under DshCodeBlock. A failed result
       -- keeps its error group so the failure stays visible.
       local body = lines_of(entry.text)
-      local limit = config.options.tool_output_lines
-      local group = entry.is_error and "DshToolError" or "DshCodeBlock"
-      local shown = math.min(#body, limit)
-      for index = 1, shown do
-        state.push(TOOL_CODE_INDENT .. body[index], group)
+      if not show_tool_output and not entry.is_error then
+        -- The call line above still says what ran; one muted line says how
+        -- much its output would add. Failures are never collapsed: a hidden
+        -- failure is a failure that is easy to miss.
+        state.push(TOOL_CODE_INDENT .. hidden_notice(#body), "DshTool")
+      else
+        local limit = config.options.tool_output_lines
+        local group = entry.is_error and "DshToolError" or "DshCodeBlock"
+        local shown = math.min(#body, limit)
+        for index = 1, shown do
+          state.push(TOOL_CODE_INDENT .. body[index], group)
+        end
+        if #body == 0 then
+          state.push(TOOL_CODE_INDENT .. "(empty)", "DshTool")
+        elseif #body > shown then
+          local omitted = #body - shown
+          state.push(TOOL_CODE_INDENT .. ("… %d more line%s"):format(omitted, omitted == 1 and "" or "s"), "DshTool")
+        end
       end
-      if #body == 0 then
-        state.push(TOOL_CODE_INDENT .. "(empty)", "DshTool")
-      elseif #body > shown then
-        local hidden = #body - shown
-        state.push(TOOL_CODE_INDENT .. ("… %d more line%s"):format(hidden, hidden == 1 and "" or "s"), "DshTool")
+    elseif entry.role == "tool_summary" then
+      -- What a run of hidden tool exchanges leaves behind: the call lines and
+      -- their output are gone, the amount of work they did is not. A failed
+      -- result is counted here in the error group, so a failure can still be
+      -- noticed without the transcript it came with.
+      local text
+      if entry.calls > 0 then
+        text = ("%d tool call%s hidden"):format(entry.calls, entry.calls == 1 and "" or "s")
+      else
+        text = "tool output hidden"
       end
+      if entry.failures > 0 then
+        text = text .. (", %d failed"):format(entry.failures)
+      end
+      state.push("  ⚙ " .. text, entry.failures > 0 and "DshToolError" or "DshTool")
     elseif entry.role == "error" then
       blank()
       state.push("✖ " .. entry.text, "DshError")
@@ -209,12 +312,13 @@ end
 --- @param buf number
 --- @param entries table[]
 --- @param win number|nil
-function M.render(buf, entries, win)
+--- @param opts {show_tool_output: boolean|nil, show_tool_exchange: boolean|nil}|nil
+function M.render(buf, entries, win, opts)
   if not vim.api.nvim_buf_is_valid(buf) then
     return
   end
 
-  local composed = M.compose(entries)
+  local composed = M.compose(entries, opts)
   local lines = composed.lines
 
   local at_bottom = true
@@ -314,20 +418,34 @@ function M.last_assistant(entries)
 end
 
 --- Window bar describing the session.
+---
+--- The tool marker trails the status so a view whose tool display is toggled
+--- off still says so while a turn streams and the title is replaced by the
+--- preview. Hiding whole exchanges subsumes hiding their output, so that
+--- marker wins when both are off.
 --- @param title string|nil
 --- @param status string|nil
 --- @param preview string|nil shown instead of the title while streaming
-function M.winbar(title, status, preview)
+--- @param opts {show_tool_output: boolean|nil, show_tool_exchange: boolean|nil}|nil
+function M.winbar(title, status, preview, opts)
   local name
   if status == "streaming" and type(preview) == "string" and preview ~= "" then
     name = preview
   else
     name = (title and title ~= "") and title or "untitled"
   end
-  if status and status ~= "" then
-    return (" dsh · %s · %s "):format(literal(name), literal(status))
+  local marker = ""
+  if type(opts) == "table" then
+    if opts.show_tool_exchange == false then
+      marker = HIDDEN_TOOL_EXCHANGE
+    elseif opts.show_tool_output == false then
+      marker = HIDDEN_TOOL_OUTPUT
+    end
   end
-  return (" dsh · %s "):format(literal(name))
+  if status and status ~= "" then
+    return (" dsh · %s · %s%s "):format(literal(name), literal(status), marker)
+  end
+  return (" dsh · %s%s "):format(literal(name), marker)
 end
 
 return M
