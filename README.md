@@ -24,6 +24,8 @@ The retry loop copies the backoff value before the jitter is applied.
     … 42 more lines
 ```
 
+![dsh.nvim in Neovim: a session transcript streaming into the buffer on the left, the trajectory tree open in a split on the right](screenshot.png)
+
 Assistant output is rendered as Markdown: headings, bullet and numbered lists, task
 checkboxes, blockquotes, rules and inline emphasis are styled, fenced code is indented and
 syntax-highlighted with treesitter when that language's parser is installed, and fence
