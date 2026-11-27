@@ -378,13 +378,45 @@ function M.create_in_workspace(ctx, cwd, opts)
   return nil, err or workspace_err
 end
 
+--- Remote address of a session.
+---
+--- A Session spawned by a subagent is not readable by its own id: DSH answers
+--- `session/agent-busy` and demands the durable parent address. The summary
+--- carries the parent, and `mode = "unknown"` lets the server accept whichever
+--- mode the child recorded. Ordinary sessions, including forks with a parent,
+--- keep the plain address.
+--- @param item table|string SessionSummary, or a session id
+--- @return table|nil address
+function M.address(item)
+  if type(item) == "string" then
+    return item ~= "" and { kind = "session", sessionId = item } or nil
+  end
+
+  local id = type(item) == "table" and item.sessionId or nil
+  if type(id) ~= "string" or id == "" then
+    return nil
+  end
+  local parent = type(item) == "table" and item.parentSessionId or nil
+  if item.origin == "subagent" and type(parent) == "string" and parent ~= "" then
+    return {
+      kind = "subagent",
+      parentSessionId = parent,
+      childSessionId = id,
+      mode = "unknown",
+    }
+  end
+  return { kind = "session", sessionId = id }
+end
+
 --- Read one backwards history page ending at `through_seq`.
+--- @param target string|table session id, or an address from `M.address`
 --- @param through_seq number cursor (`projections.asOfSeq`), NOT an arbitrary large number
 --- @return {records: table[], hasMore: boolean}|nil
-function M.page(ctx, session_id, through_seq, max_messages)
+function M.page(ctx, target, through_seq, max_messages)
+  local address = type(target) == "table" and target or { kind = "session", sessionId = target }
   return http.rpc(ctx, "session/page", {
     request = {
-      address = { kind = "session", sessionId = session_id },
+      address = address,
       throughSeq = through_seq,
       maxMessages = max_messages or config.options.max_messages,
     },

@@ -55,18 +55,25 @@ local function records_running(records)
 end
 
 --- Follow one session over the shared mux.
+---
+--- `target` is a session id, or an address from `dsh.session.address`: a
+--- Session spawned by a subagent is only readable through its durable parent
+--- address, and the follow request is what carries it.
 --- @param ctx {url: string, cookie: string}
---- @param session_id string
+--- @param target string|table session id, or a session address
 --- @param callbacks {on_update: fun(state:table)|nil, on_status: fun(status:string, message:string|nil)|nil}
 --- @return table handle with `detach()`
-function M.attach(ctx, session_id, callbacks)
+function M.attach(ctx, target, callbacks)
   callbacks = callbacks or {}
 
+  local address = type(target) == "table" and target or { kind = "session", sessionId = target }
+  local session_id = type(target) == "table" and (target.sessionId or target.childSessionId) or target
   local state = {
     session_id = session_id,
     records = {},
     entries = {},
     title = nil,
+    header = nil,
     status = "connecting",
     live = empty_live(),
   }
@@ -182,6 +189,9 @@ function M.attach(ctx, session_id, callbacks)
     if value.type == "snapshot" then
       state.records = value.records or {}
       state.cursor = value.cursor
+      -- The header carries the session's cwd, preset and delegation depth; the
+      -- chat view does not show them, `:DshTrajectory` does.
+      state.header = type(value.header) == "table" and value.header or nil
       local projections = value.projections or {}
       local values = projections.values or {}
       if type(values.title) == "string" and values.title ~= "" then
@@ -222,7 +232,7 @@ function M.attach(ctx, session_id, callbacks)
 
     stream_id = mux.stream("session/follow", {
       request = {
-        address = { kind = "session", sessionId = session_id },
+        address = address,
         assistantStream = true,
         maxMessages = config.options.max_messages,
       },

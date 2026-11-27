@@ -33,7 +33,7 @@ M.blocks_text = blocks_text
 --- First error reported by an attempt's stream, if the attempt failed.
 --- @param stream table[]|nil
 --- @return string|nil
-local function attempt_error(stream)
+function M.attempt_error(stream)
   for _, record in ipairs(stream or {}) do
     local chunk = record.chunk
     if type(chunk) == "table" and chunk.type == "finish" then
@@ -106,7 +106,7 @@ function M.build(records)
           }
         end
       elseif kind == "assistant/attempt" then
-        local message = attempt_error(data.stream)
+        local message = M.attempt_error(data.stream)
         if message then
           pending_error = message
         end

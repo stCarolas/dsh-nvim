@@ -58,6 +58,9 @@ function M.setup(opts)
     tools = function()
       M.toggle_tools()
     end,
+    trajectory = function()
+      M.trajectory()
+    end,
   }
   for action, lhs in pairs(global) do
     local callback = actions[action]
@@ -194,6 +197,37 @@ end
 --- @return boolean|nil shown the new state, nil when no view is open
 function M.toggle_tools()
   return require("dsh.ui.chat").toggle_tools()
+end
+
+--- Show the trajectory of a session in its own tab.
+---
+--- The trajectory is the session's event log as DSH's web UI shows it: turns
+--- and their steps, then, inside a step, the system prompt, the prompt and any
+--- injected context, the request header (model and tools), the assistant message
+--- with token usage and timing, the tool calls each with its result and nested
+--- PTC subcalls, and the compaction markers between them. A failed turn keeps
+--- its error. `<CR>` on a record expands its detail body, `R` re-reads history
+--- and `q` closes the view.
+---
+--- The view follows the session over `session/follow` on its own stream, so it
+--- can be opened beside a chat view and closed without disturbing it. It opens
+--- in a new tab page because it is something to consult while working, not a
+--- replacement for the conversation.
+--- @param opts {session_id: string|nil}|string|nil session id or unique prefix;
+--- omit for the session in view (then the most recent one, then the picker)
+function M.trajectory(opts)
+  local ui = require("dsh.ui.trajectory")
+  local target
+  if type(opts) == "string" then
+    target = opts
+  elseif type(opts) == "table" then
+    target = opts.session_id
+  end
+  if type(target) == "string" and vim.trim(target) ~= "" then
+    ui.open_session(vim.trim(target))
+    return
+  end
+  ui.open()
 end
 
 --- Cancel the running turn in the current (or most recently used) session.

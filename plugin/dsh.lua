@@ -80,6 +80,14 @@ vim.api.nvim_create_user_command("DshToolsToggle", function()
   dsh().toggle_tools()
 end, { desc = "DSH: show or hide whole tool exchanges (calls and output)" })
 
+vim.api.nvim_create_user_command("DshTrajectory", function(command)
+  local target = vim.trim(command.args or "")
+  dsh().trajectory({ session_id = target ~= "" and target or nil })
+end, {
+  nargs = "?",
+  desc = "DSH: show the session trajectory tree in a new tab (optional session id or prefix)",
+})
+
 vim.api.nvim_create_user_command("DshCancel", function()
   dsh().cancel()
 end, { desc = "DSH: cancel the running turn" })
@@ -140,6 +148,7 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
   group = group,
   callback = function()
     require("dsh.ui.chat").shutdown()
+    require("dsh.ui.trajectory").shutdown()
     -- Without `force`, a shared or attached server keeps running for the
     -- other Neovim instances; a private one is stopped as before.
     require("dsh.server").stop()

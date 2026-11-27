@@ -38,6 +38,10 @@ further and hides the whole tool exchange — call line and output — leaving o
 echoed verbatim, so Markdown in your own text is left alone. When the agent needs a decision,
 the plugin asks through `vim.ui.select` / `vim.ui.input`, so your picker plugin handles it.
 
+`:DshTrajectory` opens the same session from the other side: its event log as a turn/step tree
+in a tab of its own — what each step sent, which tools ran and for how long, what a compaction
+shadowed, where the tokens went. See [Trajectory](#trajectory).
+
 ## Requirements
 
 | | |
@@ -128,6 +132,7 @@ Or manually, then `:helptags doc` and `:help dsh`.
 | `:DshRefresh` | re-open the stream and re-read history |
 | `:DshOutputToggle` | collapse or restore the tool output of the session buffer (per view) |
 | `:DshToolsToggle` | hide or show whole tool exchanges — call lines and their output (per view) |
+| `:DshTrajectory [session-id]` | show a session's trajectory — turns, steps, tool calls, usage — as a tree in a new tab |
 | `:DshCancel` | cancel the running turn (quiet form of `:DshInterrupt`) |
 | `:DshInterrupt` | interrupt the running turn of the session in view, from any buffer |
 | `:DshClose` | close the session view |
@@ -339,6 +344,92 @@ behind it, so the picker has no grep preview to show.
 The rows come from the buffer: the session view under the cursor is searched, else the session
 view in the current tab.
 
+## Trajectory
+
+`:DshTrajectory` — or `keymaps.global.trajectory` — opens the session's trajectory in its own
+tab page: the same facts the DSH web UI's Trajectory tab shows, as a tree rather than a table.
+It answers "what did this turn actually do, in what order, for how long, and at what token
+cost" without replaying the transcript.
+
+```
+Session  Fix the flaky retry test
+  session 1a2b3c4d · /home/me/proj · preset standard · 10:14:22 · 2 turns · 3 steps · 5 tool calls · in 12.4k · out 812 · cache read 11.9k
+  Turn 1 · 10:14:22 · 1m 12s · completed
+    Step 1 · 3.1s
+      System prompt · 43 lines · "You are an AI agent powered by DeepSeek Harness. …"
+      You · "fix the flaky retry test"
+      Context (runtime-context) · "Current runtime context. This snapshot supersedes earlier …"
+      Request · opencode-go · deepseek-v4.1-flash · 37 tools · initial
+      Assistant · opencode-go · deepseek-v4.1-flash · in 15.8k → out 187 · ttft 1.5s · gen 2.1s · "I'll start by looking at the retry loop."
+      ⚙ read · file_path=src/retry.ts · 34ms · 86 lines
+      ⚙ bash · command=npm test -- retry · 4.2s · 12 lines
+    Step 2 · 8.4s
+      Context (time-context) · "Time sampled while preparing turn 1, step 2: …"
+      Assistant · opencode-go · deepseek-v4.1-flash · in 6.1k → out 402 · ttft 1.9s · gen 6.2s
+      ⚙ run_code · code=const retry = await read(… · 1.2s · 40 lines
+        ↳ ⚙ edit_file · file_path=src/retry.ts · 20ms · 1 line
+    ◆ Compaction · 074eec5e · 25.4s · 12.0k tokens
+    Step 3 · 1.4s
+      Assistant · opencode-go · deepseek-v4.1-flash · in 2.2k → out 223 · ttft 1.1s · gen 900ms · "Fixed: the jitter…"
+  Turn 2 · 10:20:31 · 4.2s · aborted by user
+```
+
+A turn owns steps, a step owns the records it produced, and a record's `<CR>` body sits one
+level deeper again. What each line says:
+
+- **`Turn N`** — when it started, how long it took, and how it ended: `completed`, `aborted by
+  user`, `failed` (with an `✖` error line under it), `max tokens`, `interrupted`, `forked`, or
+  `running` while it is open.
+- **`Step N`** — one model call plus the tool executions it requested, with its wall time.
+- **`System prompt`** — the rendered prompt this step sent, revised in place by DSH.
+- **`You` / `Context (<producer>)`** — a human prompt, or context DSH injected: runtime and
+  time snapshots, skill catalogs, recall, notices. The chat view hides these on purpose; the
+  trajectory shows them because they are what the model actually saw.
+- **`Request`** — the request header: provider, model, tool count and why it was logged
+  (`initial`, `change`, `series`, `resume`). `<CR>` lists the call config and every tool name.
+- **`Assistant`** — model, token usage, time to first token, generation time, and a preview.
+  `interrupted` marks a message DSH finalized when the turn was cancelled mid-stream.
+  `Attempt` rows are model attempts that committed no message (a failed or retried call).
+- **`⚙ name key=value …`** — a tool call: arguments summary, wall time, result size, or `✖`
+  with the error code and reason. `<CR>` shows the raw argument JSON exactly as the model
+  produced it, the full result text, the tool's own `meta` payload and the error block.
+- **`↳ ⚙ …`** — a nested PTC subcall (`run_code` dispatching another tool), indented under the
+  call that dispatched it, as deep as the nesting goes.
+- **`◆ Compaction`** — a context compaction with its duration and how many tokens it shadowed.
+- **`── session resumed` / `── inherited history (fork or seed)`** — DSH's log boundary, which
+  is where timestamp jumps between turns come from.
+
+`<CR>` expands or collapses the record under the cursor, `R` re-reads history, and `q` closes
+the view and its tab. Bodies are capped by `trajectory.detail_lines` and end with a
+`… N more lines` marker. Because the tree is plain indentation, `zi` turns folding on and
+`zM` / `zR` / `za` fold turns, steps and records without the plugin tracking any fold state —
+which also means a live update repaints the lines and a per-fold choice made with `zc` is
+recomputed; fold a settled session, or set `trajectory.follow = false` to keep it still.
+
+The view follows the session over its own `session/follow` stream, so it stays live beside a
+chat view — opening, refreshing or closing it never disturbs the conversation, and a second
+window onto the same session costs one more stream, not a second session. Set
+`trajectory.follow = false` to read one page on open and on `R` instead.
+
+`lua/dsh/trajectory.lua` builds the tree from the raw session events, the same log the chat
+view reduces to its transcript. That is why the trajectory can show what the chat view
+deliberately drops — system prompts, injected context, request headers, failed attempts,
+compaction markers — and it counts the events it does not render in the header
+(`154 other events`: job bookkeeping, inbox splices, workspace changes and the like).
+
+`:DshTrajectory` with no argument follows the session view under the cursor, then the most
+recently used one, and offers the picker when no session view is open. Pass a session id —
+or a unique prefix of one, including the 8-character short id the header shows — to inspect a
+session that is not open: `:DshTrajectory 1a2b`. An ambiguous prefix lists the candidates and
+opens nothing.
+
+Sessions a subagent spawned are listed like any other (unless `sessions.include_subagents =
+false`) and open the same way: DSH only reads them through their parent's durable address, so
+the view resolves that address from the session summary before it opens the stream. If the
+stream still cannot be opened — a session DSH refuses, or a dropped socket — the view falls
+back to reading one history page over HTTP and says `offline` in the winbar, so the tree stays
+inspectable and `R` retries.
+
 ## Questions and approvals
 
 While a session view is open the plugin also answers the human decisions DSH forwards to
@@ -521,6 +612,11 @@ require("dsh").setup({
   search = {
     scope = "all",            -- "all" | "prompts" | "replies" | "tools" | "notes"
   },
+  trajectory = {
+    follow = true,            -- false => read one history page per open/refresh
+    detail_lines = 80,        -- <CR> body rows per record
+    preview_chars = 64,       -- characters of a record's text kept in its label
+  },
   interactions = {
     enabled = true,           -- answer forwarded questions and approvals
     questions = true,         -- ask_user_question tool calls
@@ -557,6 +653,12 @@ re-render with both states; a view whose tool display is collapsed says so in th
 spell checking and the like) instead of the floating popup. `prompt.split` picks the
 orientation, and `prompt.width` / `prompt.height` size the window. Both keys normalize to
 `"float"` / `"horizontal"` with a warning when misspelled, and the popup stays the default.
+
+`trajectory` configures `:DshTrajectory` only. `follow = false` reads a single history page
+when the view opens and when you press `R`, which is the safer choice when the socket is
+unreliable or the server is shared with other clients; `detail_lines` caps how much of a
+record's body `<CR>` expands (a longer body ends with a `… N more lines` marker), and
+`preview_chars` sets how much of a record's own text its one-line label keeps.
 
 `quick_chat` configures `:DshQuickChat` only: the Agent mode its sessions compose, the two
 splits, and the Visual-selection prefill. It never changes where `:Dsh`, `:DshNew` or
@@ -685,6 +787,16 @@ treesitter when that language's parser is present. Span styling sits on a higher
 than each line's base group, so a bold word inside a heading keeps both. Prompts you type bypass
 the renderer and stay literal.
 
+**6. Trajectory.** `lua/dsh/trajectory.lua` is the other projection of the same records. Where
+`surface.lua` keeps only the model-visible conversation, it keeps the structure: `turn/start` and
+`turn/end` open and close a turn, `step/start` and `step/end` a step, and every message, tool call,
+`tool/ptc-dispatch` subcall, `compaction/*` marker, `request/header`, `llm/retry` and
+`session/end-seed` boundary becomes a row at the depth its event belongs to. Timing comes from the
+event timestamps (`time`, Unix epoch milliseconds) and from the recorded assistant stream: the
+first token delta gives TTFT against `step/start`, the last one gives generation time. Usage is
+the `usage` object DSH attaches to `assistant/message`, summed over the session. Rows carry an
+optional detail body that `<CR>` expands, so the same projection serves the tree and its detail.
+
 ## Limitations
 
 - DSH is in developer preview (`0.2.1-rc.2` at the time of writing) and states there will be
@@ -692,6 +804,12 @@ the renderer and stay literal.
   `workspace.lua`, `mux.lua`, `follow.lua` and `interactions.lua` to keep updates cheap.
 - Unary calls still use HTTP because DSH forbids them on the WebSocket carrier.
 - One snapshot window is loaded (`max_messages`); older pages are not paginated in the UI yet.
+  `:DshTrajectory` is limited to that window too, so its tree starts where the loaded history
+  starts. A turn or step whose `turn/start` / `step/start` the window cut away still appears, but
+  without a duration or a TTFT: the view does not invent timings it cannot know.
+- The trajectory follows the session on a stream of its own, so a session shown in both a chat
+  view and a trajectory tab has two `session/follow` streams open. Neither view is charged for
+  the other's redraws.
 - Markdown tables are shown as source text, and code highlighting depends on the language's
   treesitter parser being installed.
 - Approvals offer allow-once and reject only; permission presets and approval policies are not
@@ -721,6 +839,7 @@ nvim --headless -l scripts/interrupt_spec.lua     # :DshInterrupt resolution and
 nvim --headless -l scripts/server_spec.lua        # attach/shared server discovery, with stubbed transports
 nvim --headless -l scripts/treesitter_spec.lua    # dshchat grammar, queries and wiring
 nvim --headless -l scripts/search_spec.lua        # transcript search rows and scopes
+nvim --headless -l scripts/trajectory_spec.lua    # :DshTrajectory projection, tree and tab
 nvim --headless -l scripts/output_spec.lua        # tool-output toggle: rendering, per-view state, command
 nvim --headless -l scripts/tools_spec.lua         # tool-exchange toggle, its run summaries and the output toggle
 nvim --headless -l scripts/ws_spec.lua            # WebSocket transport: handshake, streams, heartbeat

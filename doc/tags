@@ -12,6 +12,7 @@ dsh-search	dsh.txt	/*dsh-search*
 dsh-shared	dsh.txt	/*dsh-shared*
 dsh-status-api	dsh.txt	/*dsh-status-api*
 dsh-tools	dsh.txt	/*dsh-tools*
+dsh-trajectory	dsh.txt	/*dsh-trajectory*
 dsh-treesitter	dsh.txt	/*dsh-treesitter*
 dsh-troubleshoot	dsh.txt	/*dsh-troubleshoot*
 dsh-workspace	dsh.txt	/*dsh-workspace*

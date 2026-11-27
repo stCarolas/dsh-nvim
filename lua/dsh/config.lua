@@ -166,8 +166,30 @@ M.defaults = {
     },
   },
 
+  --- Session trajectory view behind `:DshTrajectory`.
+  ---
+  --- Shows the session as a tree of turns and steps: prompts and injected
+  --- context, system prompt revisions, request headers, assistant messages with
+  --- their usage and timing, tool calls with their results and nested PTC
+  --- subcalls, compaction markers and how each turn ended. The tree is plain
+  --- buffer text, one line per record, and `<CR>` on a record expands its
+  --- detail body.
+  trajectory = {
+    --- Follow the session live over `session/follow`. When false, the view
+    --- reads one history page on open and on `R`, so a dropped connection
+    --- cannot leave it stale.
+    follow = true,
+    --- Lines of detail `<CR>` shows for one record. Longer bodies end with a
+    --- "… N more lines" marker.
+    detail_lines = 80,
+    --- Characters of a record's own text kept in its one-line label.
+    preview_chars = 64,
+  },
+
   keymaps = {
-    --- Buffer-local mappings inside a DSH chat buffer.
+    --- Buffer-local mappings inside a DSH chat buffer. `refresh` and `close`
+    --- also apply to a trajectory buffer, where `<CR>` expands the row under
+    --- the cursor instead of opening a prompt.
     prompt = "<CR>",
     refresh = "R",
     cancel = "<C-c>",
@@ -185,7 +207,7 @@ M.defaults = {
     ---   next_chat = "<leader>dx", interrupt = "<leader>di",
     ---   model = "<leader>dm", mode = "<leader>dc",
     ---   workspace = "<leader>dw", quick_chat = "<leader>dq",
-    ---   search = "<leader>d/" }.
+    ---   search = "<leader>d/", trajectory = "<leader>dt" }.
     global = {},
   },
 
@@ -360,6 +382,20 @@ function M.validate()
         warn(("quick_chat.selection.max_lines must be a non-negative number; using %d"):format(selection.max_lines))
       end
     end
+  end
+
+  local trajectory = M.options.trajectory
+  local trajectory_defaults = M.defaults.trajectory
+  if type(trajectory) ~= "table" then
+    M.options.trajectory = vim.deepcopy(trajectory_defaults)
+    warn("trajectory config must be a table; using the defaults")
+  else
+    if type(trajectory.follow) ~= "boolean" then
+      trajectory.follow = trajectory_defaults.follow
+      warn(("trajectory.follow must be a boolean; using %s"):format(tostring(trajectory.follow)))
+    end
+    trajectory.detail_lines = dimension(trajectory.detail_lines, trajectory_defaults.detail_lines, 1)
+    trajectory.preview_chars = dimension(trajectory.preview_chars, trajectory_defaults.preview_chars, 16)
   end
 
   return M.options

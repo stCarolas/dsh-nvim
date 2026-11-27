@@ -122,6 +122,20 @@ function M.define_highlights()
     DshQuote = { default = true, link = "Comment" },
     DshBullet = { default = true, link = "Special" },
     DshHr = { default = true, link = "Comment" },
+
+    -- Trajectory view (`:DshTrajectory`): a turn/step tree of one session.
+    DshTrajectoryTitle = { default = true, link = "Title", bold = true },
+    DshTrajectoryMeta = { default = true, link = "Comment" },
+    DshTrajectoryTurn = { default = true, link = "Function", bold = true },
+    DshTrajectoryStep = { default = true, link = "Identifier" },
+    DshTrajectoryUser = { default = true, link = "Directory" },
+    DshTrajectoryContext = { default = true, link = "Comment" },
+    DshTrajectoryAssistant = { default = true, link = "Title" },
+    DshTrajectoryTool = { default = true, link = "Comment" },
+    DshTrajectoryToolError = { default = true, link = "DiagnosticError" },
+    DshTrajectoryCompaction = { default = true, link = "DiagnosticWarn" },
+    DshTrajectoryError = { default = true, link = "DiagnosticError" },
+    DshTrajectoryDetail = { default = true, link = "NonText" },
   }
   for name, spec in pairs(groups) do
     vim.api.nvim_set_hl(0, name, spec)
@@ -388,7 +402,7 @@ end
 --- treated as untrusted: escape the metacharacter and drop line breaks.
 --- @param text string
 --- @return string
-local function literal(text)
+function M.literal(text)
   return (text:gsub("%%", "%%%%"):gsub("[\r\n]", " "))
 end
 
@@ -443,9 +457,9 @@ function M.winbar(title, status, preview, opts)
     end
   end
   if status and status ~= "" then
-    return (" dsh · %s · %s%s "):format(literal(name), literal(status), marker)
+    return (" dsh · %s · %s%s "):format(M.literal(name), M.literal(status), marker)
   end
-  return (" dsh · %s%s "):format(literal(name), marker)
+  return (" dsh · %s%s "):format(M.literal(name), marker)
 end
 
 return M
